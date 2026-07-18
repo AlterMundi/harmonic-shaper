@@ -1,0 +1,411 @@
+{
+  "name": "shaper-instrument-control",
+  "contract_type": "instrument_control",
+  "contract_version": "1.0",
+  "schema_version": "1.0.0",
+  "namespace": "/digital",
+  "template_usage": "Concrete Instrument Control v1 manifest for the Shaper as implemented today in digital-beacon (osc_receiver.py). Documents existing wire behaviour; does not invent new addresses.",
+  "transport": {
+    "protocol": "OSC 1.0 over UDP",
+    "max_datagram_bytes": 1200,
+    "hello_rebroadcast_s": 1.0,
+    "listeners": [
+      {
+        "role": "native_control",
+        "port": 9002,
+        "bind": "0.0.0.0",
+        "namespace": "/digital",
+        "config_key": "SHAPER_OSC_PORT",
+        "description": "Direct Shaper control: /digital/harmonic/*/gain|pan|phase, /digital/master, /digital/panic."
+      },
+      {
+        "role": "nh_broadcast_slave",
+        "port": 9001,
+        "bind": "0.0.0.0",
+        "namespace": "/beacon",
+        "config_key": "BEACON_BROADCAST_PORT",
+        "socket_options": "SO_REUSEPORT + SO_REUSEADDR so Shaper co-listens with the NH visualizer",
+        "description": "NaturalHarmony harmonic_beacon broadcasts consumed as slave input: /beacon/voice/on|off|freq, /beacon/f1, /beacon/panic, /beacon/level."
+      }
+    ]
+  },
+  "hashes": {
+    "algorithm": "SHA-256 truncated to 128 bits, lowercase hex (32 characters)",
+    "contract_id": "Canonical UTF-8 JSON with sorted keys, no whitespace and no NaN/Infinity, excluding top-level contract_id, golden_hash and expected_contract_id fields. The expected value lives in a golden sidecar."
+  },
+  "instrument": {
+    "instrument_id": "shaper",
+    "description": "Additive harmonic synthesizer (Shaper): up to 32 sine voices keyed by harmonic_n 1..32, waveshaper drive, per-voice LFO, beacon sidechain, master gain. Currently embedded in digital-beacon; this manifest formalizes the OSC surface already exposed by digital_beacon/osc_receiver.py.",
+    "native_namespace_rule": "Native write namespace is /digital on UDP :9002. NH lifecycle and f1 arrive under /beacon on UDP :9001 as slave input — not flattened into /digital."
+  },
+  "stream_identity": {
+    "stream_id": "Not implemented today. Planned: random 64-bit lowercase hexadecimal value generated once per instrument process start.",
+    "scope": "When implemented, state_seq and monotonic client state are scoped to stream_id.",
+    "restart_rule": "A new stream_id invalidates cached state and requires a fresh state synchronization."
+  },
+  "counters": {
+    "state_seq": "Not implemented today. Planned: unsigned monotonic OSC int64 (h), incremented for every state change or state snapshot emitted by the instrument."
+  },
+  "handshake": {
+    "status": "none today — to be added",
+    "implemented": false,
+    "hello_address": "/digital/hello",
+    "hello_request_address": "/digital/hello/request",
+    "hello_args": [
+      "instrument_id",
+      "stream_id",
+      "schema_version",
+      "producer_version",
+      "contract_id",
+      "state_seq(h)"
+    ],
+    "rebroadcast": "Not implemented. Planned: at process start, approximately every hello_rebroadcast_s, and whenever contract or producer metadata changes. digital-beacon osc_receiver.py currently has no /hello or /hello/request handlers."
+  },
+  "capabilities": [
+    {
+      "name": "harmonic_gain",
+      "address_pattern": "/digital/harmonic/{N}/gain",
+      "parameters": {
+        "N": {
+          "type": "int32",
+          "bounds": [
+            1,
+            32
+          ]
+        }
+      },
+      "arguments": [
+        {
+          "name": "gain",
+          "type": "float32",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "polarity": "0 = silent; 1 = maximum per-voice gain. Clamped in VoiceParameterStore.set_gain."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate store write; audio envelope (attack_s / release_s) applies only to voice on/off amplitude, not to this gain set.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
+      "name": "harmonic_pan",
+      "address_pattern": "/digital/harmonic/{N}/pan",
+      "parameters": {
+        "N": {
+          "type": "int32",
+          "bounds": [
+            1,
+            32
+          ]
+        }
+      },
+      "arguments": [
+        {
+          "name": "pan",
+          "type": "float32",
+          "range": [
+            -1.0,
+            1.0
+          ],
+          "polarity": "-1 = left; 0 = center; 1 = right. Clamped in VoiceParameterStore.set_pan."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate store write.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
+      "name": "harmonic_phase",
+      "address_pattern": "/digital/harmonic/{N}/phase",
+      "parameters": {
+        "N": {
+          "type": "int32",
+          "bounds": [
+            1,
+            32
+          ]
+        }
+      },
+      "arguments": [
+        {
+          "name": "phase_degrees",
+          "type": "float32",
+          "range": [
+            0.0,
+            360.0
+          ],
+          "polarity": "OSC argument is degrees. Store converts with math.radians(phase_deg % 360). Increasing values advance phase; 360 wraps to 0."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate store write; no circular interpolation on the OSC path today.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
+      "name": "master_gain",
+      "address_pattern": "/digital/master",
+      "parameters": {},
+      "arguments": [
+        {
+          "name": "gain",
+          "type": "float32",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "polarity": "0 = silent master; 1 = full Shaper master gain. Clamped in set_master_gain. Default DEFAULT_SHAPER_MASTER = 0.8."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate store write.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
+      "name": "panic",
+      "address_pattern": "/digital/panic",
+      "parameters": {},
+      "arguments": [
+        {
+          "name": "trigger",
+          "type": "int32",
+          "range": [
+            0,
+            1
+          ],
+          "polarity": "Message presence triggers panic; argument values are ignored by the handler."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate: deactivates all voices, resets gain/pan/phase defaults, clears active history; may invoke MIDI panic callback.",
+      "read": false,
+      "write": true,
+      "listener_port": 9002
+    }
+  ],
+  "slave_broadcasts": {
+    "description": "Addresses the Shaper listens to on :9001 as a NaturalHarmony broadcast slave. Not part of the native /digital write surface for Instrument Control clients, but part of the real OSC receive table in osc_receiver.py.",
+    "listener_port": 9001,
+    "addresses": [
+      {
+        "address_pattern": "/beacon/voice/on",
+        "arguments": [
+          {
+            "name": "voice_id",
+            "type": "int32",
+            "range": [
+              0,
+              2147483647
+            ]
+          },
+          {
+            "name": "freq",
+            "type": "float32",
+            "range": [
+              0.0,
+              20000.0
+            ],
+            "polarity": "Hz. Sets voice frequency and activates the harmonic."
+          },
+          {
+            "name": "gain",
+            "type": "float32",
+            "range": [
+              0.0,
+              1.0
+            ]
+          },
+          {
+            "name": "source_note",
+            "type": "int32",
+            "range": [
+              1,
+              32
+            ],
+            "polarity": "Used as harmonic_n when harmonic_n arg is omitted."
+          },
+          {
+            "name": "harmonic_n",
+            "type": "int32",
+            "range": [
+              1,
+              32
+            ],
+            "optional": true,
+            "polarity": "If present, overrides source_note as the harmonic index (1..32)."
+          }
+        ],
+        "effect": "store.voice_on(harmonic_n, voice_id, freq, gain); records a strum timestamp for LFO period estimation."
+      },
+      {
+        "address_pattern": "/beacon/voice/off",
+        "arguments": [
+          {
+            "name": "voice_id",
+            "type": "int32",
+            "range": [
+              0,
+              2147483647
+            ]
+          }
+        ],
+        "effect": "store.voice_off(voice_id) — deactivates the voice currently bound to that voice_id."
+      },
+      {
+        "address_pattern": "/beacon/voice/freq",
+        "arguments": [
+          {
+            "name": "voice_id",
+            "type": "int32",
+            "range": [
+              0,
+              2147483647
+            ]
+          },
+          {
+            "name": "freq",
+            "type": "float32",
+            "range": [
+              0.0,
+              20000.0
+            ],
+            "polarity": "Hz."
+          }
+        ],
+        "effect": "store.voice_freq(voice_id, freq)."
+      },
+      {
+        "address_pattern": "/beacon/f1",
+        "arguments": [
+          {
+            "name": "f1",
+            "type": "float32",
+            "range": [
+              20.0,
+              200.0
+            ],
+            "polarity": "Base fundamental Hz. Clamped to F1_MIN..F1_MAX (20..200); then multiplied by vsrate."
+          }
+        ],
+        "effect": "store.update_f1(f1)."
+      },
+      {
+        "address_pattern": "/beacon/panic",
+        "arguments": [
+          {
+            "name": "trigger",
+            "type": "int32",
+            "range": [
+              0,
+              1
+            ],
+            "polarity": "Arguments ignored; message presence triggers store.panic()."
+          }
+        ],
+        "effect": "store.panic()."
+      },
+      {
+        "address_pattern": "/beacon/level",
+        "arguments": [
+          {
+            "name": "level",
+            "type": "float32",
+            "range": [
+              0.0,
+              1.0
+            ],
+            "polarity": "Beacon envelope level for sidechain (0..1). Clamped in set_beacon_level."
+          }
+        ],
+        "effect": "store.set_beacon_level(level)."
+      }
+    ]
+  },
+  "state_sync": {
+    "mode": "dump",
+    "status": "partial — current mechanism is WebSocket; OSC dump is planned",
+    "current_mechanism": {
+      "transport": "WebSocket (not OSC)",
+      "path": "/ws",
+      "http_api": "FastAPI dashboard (default http://127.0.0.1:8080)",
+      "on_connect": "Server accepts the socket and immediately sends store.to_dict() as JSON.",
+      "on_change": "VoiceParameterStore._on_change broadcasts store.to_dict() to all connected WebSocket clients (wired in api.py create_app).",
+      "payload_fields": [
+        "f1",
+        "master_gain",
+        "global_attack_s",
+        "global_release_s",
+        "sidechain_amount",
+        "beacon_level",
+        "lfo_rate_divisor",
+        "lfo_waveform",
+        "lfo_amount",
+        "strum_period_s",
+        "voices.{n}.{gain,pan,phase_deg,attack_s,release_s,shape,lfo_gain,lfo_pan,lfo_phase,active,freq}"
+      ],
+      "related_http": [
+        "GET /api/state — same store.to_dict() snapshot",
+        "POST /api/shaper/{n}/{param} — per-voice REST control (gain|pan|phase_deg|attack_s|release_s|shape|lfo_gain|lfo_pan|lfo_phase)",
+        "POST /api/shaper/global/{param} — global REST control (attack|release|master|sidechain|lfo_rate_divisor|lfo_waveform|lfo_amount)"
+      ]
+    },
+    "request_address": "/digital/state",
+    "request_args": [
+      "expected_contract_id"
+    ],
+    "planned": {
+      "status": "planned",
+      "osc_dump_address": "/shaper/state",
+      "note": "Planned OSC state dump at /shaper/state (extraction target namespace). Not implemented in digital-beacon today. Instrument Control request_address under the current native namespace is /digital/state for schema compliance; both are planned, not live."
+    },
+    "response": "TODAY: WebSocket /ws delivers JSON snapshots (see current_mechanism). PLANNED OSC dump: one atomic bundle beginning with /digital/state/begin(stream_id, state_seq, contract_id) or the planned /shaper/state equivalent, followed by readable capability values at native addresses, ending with state/end(stream_id, state_seq).",
+    "periodic_broadcast": false,
+    "connect_rule": "TODAY: open WebSocket /ws and apply the initial JSON snapshot before presenting state. After handshake is implemented, a client MUST complete a matching /hello and then either WS sync or the planned OSC dump before presenting or modifying instrument state."
+  },
+  "receiver_rules": {
+    "client_gating": "TODAY: none — any UDP peer may write /digital/* on :9002 and /beacon/* on :9001; there is no contract_id gate. PLANNED: a client MUST NOT send capability writes until /hello contract_id exactly matches the locally accepted contract_id and state synchronization completes.",
+    "stale_contract": "TODAY: not applicable (no handshake). PLANNED: on a missing or mismatched contract_id, stop writes, discard state messages, mark the instrument incompatible and request /hello again.",
+    "instrument_gating": "TODAY: none — osc_receiver accepts all mapped addresses with a silent default handler for unknown paths. PLANNED: when a transport adapter can identify negotiated clients, ignore writes from clients that did not complete a matching handshake.",
+    "monotonic_discard": "TODAY: not applicable (no state_seq on the wire). PLANNED: within one stream_id, discard state updates with state_seq less than or equal to the last applied state_seq, except members of the same atomic state dump.",
+    "stream_change": "TODAY: process restart clears in-memory VoiceParameterStore; clients should re-open /ws. PLANNED: a new stream_id clears cached state and requires a fresh dump or broadcast synchronization.",
+    "path_parameter_n": "For /digital/harmonic/{N}/*, N is parsed as path segment index 3 (0-based split). Non-integer N is ignored. Store keys are harmonic_n in 1..32 (N_BANDS / MAX_VOICES).",
+    "clamping": "Numeric writes are clamped in VoiceParameterStore (gain 0..1, pan -1..1, phase_deg mod 360, master 0..1, f1 20..200, beacon_level 0..1)."
+  },
+  "voice_model_alias": {
+    "enabled": true,
+    "status": "Enabled — the Shaper fits the BCP common-voice model: per-voice gain/pan/phase over harmonic_n 1..32, plus f1 and on/off lifecycle (on/off and f1 arrive via NH /beacon/* slave path, not under /digital).",
+    "voice_parameter": "N",
+    "voice_bounds": [
+      1,
+      32
+    ],
+    "mapping": {
+      "gain": "/digital/harmonic/{N}/gain",
+      "pan": "/digital/harmonic/{N}/pan",
+      "phase": "/digital/harmonic/{N}/phase"
+    },
+    "lifecycle_and_tuning": {
+      "voice_on": "/beacon/voice/on",
+      "voice_off": "/beacon/voice/off",
+      "voice_freq": "/beacon/voice/freq",
+      "f1": "/beacon/f1",
+      "note": "Lifecycle and f1 are NH broadcast inputs on :9001; they are documented in slave_broadcasts, not in the native /digital capability write set."
+    }
+  },
+  "rest_surface_note": "REST /api/shaper/* exposes additional parameters (shape, per-voice and global LFO, attack/release, sidechain) that have NO OSC addresses in osc_receiver.py today. They are out of the OSC capability table but part of the live control surface via HTTP + WebSocket state.",
+  "discrepancies_vs_report": [
+    "Report 04-digital-beacon.md §1/§5 correctly names dual ports :9001 (/beacon/*) and :9002 (/digital/*) — matches code.",
+    "harmonic-shaper README currently says future namespace /shaper/*; live code uses /digital/* — CODE wins; /shaper/state dump is only planned.",
+    "REST exposes shape/LFO/envelope/sidechain; OSC direct control is only gain/pan/phase/master/panic — report mentions waveshaper/LFO/sidechain as engine features, not as OSC addresses.",
+    "Template/common-voice examples often use N bounds 0..31; Shaper uses harmonic_n 1..32 — CODE wins."
+  ]
+}
