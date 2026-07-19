@@ -54,23 +54,47 @@ class AudioEngine:
         self._lock = threading.RLock()
         self._record_sink: Optional[list] = None
 
+    def _resolve_stream_params(self) -> tuple[int, Optional[int | str]]:
+        """Resolve the effective (sample_rate, device) for the stream.
+
+        JACK (the reliable path over PipeWire on this host — the PipeWire
+        ALSA plugin renders silence for PortAudio streams) imposes the
+        server sample rate; opening with any other rate fails with
+        PaErrorCode -9997. Adopt the device's rate when JACK is selected.
+        """
+        if not HAS_SOUNDDEVICE:
+            return self._sample_rate, self._device
+        try:
+            info = sd.query_devices(self._device) if self._device is not None else None
+            if info is None:
+                return self._sample_rate, self._device
+            hostapi = sd.query_hostapis(info["hostapi"])["name"]
+            if "JACK" in hostapi:
+                return int(info["default_samplerate"]), self._device
+        except Exception as exc:
+            log.debug("device probe failed, keeping configured params: %s", exc)
+        return self._sample_rate, self._device
+
     def start(self) -> None:
         if self._running:
             return
         if not HAS_SOUNDDEVICE:
             detail = str(SOUNDDEVICE_IMPORT_ERROR or "not installed")
             raise ImportError(f"sounddevice/PortAudio is required: {detail}")
+        sample_rate, device = self._resolve_stream_params()
         self._stream = sd.OutputStream(
-            samplerate=self._sample_rate,
+            samplerate=sample_rate,
             blocksize=self._block_size,
             channels=2,
             dtype="float32",
-            device=self._device,
+            device=device,
             callback=self._audio_callback,
             finished_callback=self._on_stream_finished,
         )
         self._stream.start()
         self._running = True
+        self._sample_rate = sample_rate
+        self._device = device
         log.info("Shaper audio: sr=%d block=%d device=%s",
                  self._sample_rate, self._block_size, self._device)
 
