@@ -29,8 +29,9 @@ ENVELOPE_PROFILES: dict[str, tuple[float, float]] = {
 _ARP_DENSITY_SUBDIVS: tuple[int, ...] = (1, 2, 3, 4, 6, 8)
 
 # Arpeggiator voice_id band: -20000 - H*1000 - n  (H hand, n harmonic 1..32).
+# H=0: -20001..-20032, H=1: -21001..-21032, H=2: -22001..-22032, H=3: -23001..-23032.
 _ARP_VOICE_ID_BASE = -20_000
-_ARP_HANDS = (0, 1)  # H=0 and H=1; H=2.. reserved
+_ARP_HANDS = (0, 1, 2, 3)  # multi-body: body0 hands 0/1, body1 hands 2/3
 _ARP_RATE_EPS = 0.01
 _ARP_DIR_EPS = 1e-6
 
@@ -207,7 +208,7 @@ class VoiceParameterStore:
         self._settle_beats: float = 1.0
         self._generator_enable: bool = True
         self._beat_phase: float = 0.0  # 0..1, advances at bpm/60 Hz
-        # Arpeggiator per hand H (H=0, H=1). Settled params ease over settle_beats.
+        # Arpeggiator per hand H (H=0..3). Settled params ease over settle_beats.
         self._arp_state: dict[int, dict] = {
             h: _default_arp_state(h) for h in _ARP_HANDS
         }
@@ -468,7 +469,7 @@ class VoiceParameterStore:
         with self._lock:
             return self._generator_enable
 
-    # ─── Arpeggiator (H hands; H=0 and H=1) ───────────────────────────
+    # ─── Arpeggiator (H hands; H=0..3 multi-body) ─────────────────────
 
     def _ensure_arp(self, hand: int) -> dict:
         h = int(hand)
@@ -952,7 +953,7 @@ class VoiceParameterStore:
         """Reset all arp hands to default runtime (caller holds lock)."""
         for hand in list(self._arp_state.keys()):
             self._arp_state[hand] = _default_arp_state(hand)
-        # Ensure both H=0 and H=1 always exist after panic.
+        # Ensure H=0..3 always exist after panic.
         for h in _ARP_HANDS:
             if h not in self._arp_state:
                 self._arp_state[h] = _default_arp_state(h)
@@ -1146,7 +1147,7 @@ class VoiceParameterStore:
     def panic(self) -> None:
         """Clear all voice state. Does not reset scene params (e.g. ceiling).
 
-        Also resets arpeggiator runtime (both hands) and the percussion pool
+        Also resets arpeggiator runtime (hands H=0..3) and the percussion pool
         so generators do not keep stepping or holding pending offs after panic.
         """
         with self._lock:

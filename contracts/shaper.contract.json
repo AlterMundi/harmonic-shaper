@@ -303,7 +303,7 @@
             0,
             1
           ],
-          "polarity": "0 = this arpeggiator hand off; 1 = on. Implements H=0 and H=1 (voice bands -20001..-20032 and -21001..-21032). Voice band -20000-H*1000-n."
+          "polarity": "0 = this arpeggiator hand off; 1 = on. Implements H=0..3 (voice bands -20001..-20032, -21001..-21032, -22001..-22032, -23001..-23032). Voice band -20000-H*1000-n. OSC address /digital/arp/{H}/* uses wildcard; H bounds 0..7 reserved."
         }
       ],
       "lag_ms": 0.0,
@@ -615,7 +615,7 @@
         }
       ],
       "lag_ms": 0.0,
-      "smoothing": "Immediate: deactivates all voices, resets gain/pan/phase defaults, clears active history, clears arp runtime (both hands) and perc pool; may invoke MIDI panic callback. Does not reset scene parameters such as partial_ceiling, clock_bpm, or perc rate/gain/accent.",
+      "smoothing": "Immediate: deactivates all voices, resets gain/pan/phase defaults, clears active history, clears arp runtime (hands H=0..3) and perc pool; may invoke MIDI panic callback. Does not reset scene parameters such as partial_ceiling, clock_bpm, or perc rate/gain/accent.",
       "read": false,
       "write": true,
       "listener_port": 9002

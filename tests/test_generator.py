@@ -1,4 +1,4 @@
-"""Arpeggiator H=0/H=1 + foot percussion generator tests."""
+"""Arpeggiator H=0..3 + foot percussion generator tests."""
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ def test_arp_voice_id_band_h0() -> None:
     assert arp_voice_id(0, 1) == -20001
     assert arp_voice_id(0, 32) == -20032
     assert arp_voice_id(1, 1) == -21001
+    assert arp_voice_id(2, 1) == -22001
+    assert arp_voice_id(3, 1) == -23001
 
 
 def test_density_quantization() -> None:
@@ -347,8 +349,22 @@ def test_osc_arp_handlers_wire_to_store() -> None:
     assert st1["target_rate"] == 2.0
     assert st1["target_gain"] == 0.55
 
+    # H=2 and H=3 (second body) use the same wildcard path.
+    receiver._on_arp_enable("/digital/arp/2/enable", 1)
+    receiver._on_arp_rate("/digital/arp/2/rate", 1.5)
+    receiver._on_arp_gain("/digital/arp/2/gain", 0.4)
+    receiver._on_arp_enable("/digital/arp/3/enable", 1)
+    receiver._on_arp_rate("/digital/arp/3/rate", 4.0)
+    st2 = store.get_arp_state(2)
+    st3 = store.get_arp_state(3)
+    assert st2["enabled"] is True
+    assert st2["target_rate"] == 1.5
+    assert st2["target_gain"] == 0.4
+    assert st3["enabled"] is True
+    assert st3["target_rate"] == 4.0
 
-# ─── H=1 second hand ──────────────────────────────────────────────────
+
+# ─── Multi-body hands H=0..3 ───────────────────────────────────────────
 
 
 def test_arp_voice_id_band_h1() -> None:
@@ -358,6 +374,30 @@ def test_arp_voice_id_band_h1() -> None:
     h0 = {arp_voice_id(0, n) for n in range(1, 33)}
     h1 = {arp_voice_id(1, n) for n in range(1, 33)}
     assert h0.isdisjoint(h1)
+
+
+def test_arp_voice_id_bands_h0_to_h3_non_overlapping() -> None:
+    """Four hands produce pairwise-disjoint voice_id bands (32 ids each)."""
+    expected_bounds = {
+        0: (-20032, -20001),
+        1: (-21032, -21001),
+        2: (-22032, -22001),
+        3: (-23032, -23001),
+    }
+    bands: dict[int, set[int]] = {}
+    for hand in (0, 1, 2, 3):
+        band = {arp_voice_id(hand, n) for n in range(1, 33)}
+        assert len(band) == 32
+        lo, hi = expected_bounds[hand]
+        assert min(band) == lo
+        assert max(band) == hi
+        assert arp_voice_id(hand, 1) == hi
+        assert arp_voice_id(hand, 32) == lo
+        bands[hand] = band
+
+    for a in (0, 1, 2, 3):
+        for b in range(a + 1, 4):
+            assert bands[a].isdisjoint(bands[b]), f"H={a} overlaps H={b}"
 
 
 def test_h0_and_h1_independent_voice_ids() -> None:
@@ -399,6 +439,61 @@ def test_h0_and_h1_independent_voice_ids() -> None:
     assert voices_h0[3].voice_id == arp_voice_id(0, 3)
     assert voices_h1[20].voice_id == arp_voice_id(1, 20)
     assert voices_h1[20].envelope_profile == "pluck"
+
+
+def test_four_hands_produce_non_overlapping_voice_ids() -> None:
+    """H=0..3 all sustain simultaneously with non-overlapping voice_ids."""
+    store = VoiceParameterStore()
+    store.update_f1(40.0)
+    store.set_clock_bpm(120.0)
+    store.set_settle_beats(0.25)
+    store.set_partial_ceiling(32)
+    store.set_generator_enable(True)
+
+    # Disjoint registers so each hand maps to a distinct harmonic_n key.
+    # Centers: [1,5]→3, [6,10]→8, [11,15]→13, [16,24]→20
+    windows = {
+        0: (1, 5),
+        1: (6, 10),
+        2: (11, 15),
+        3: (16, 24),
+    }
+    expected_center = {0: 3, 1: 8, 2: 13, 3: 20}
+    expected_band = {
+        0: (-20032, -20001),
+        1: (-21032, -21001),
+        2: (-22032, -22001),
+        3: (-23032, -23001),
+    }
+
+    for hand, (lo, hi) in windows.items():
+        store.set_arp_rate(hand, 0.0)
+        store.set_arp_direction(hand, 1.0)
+        store.set_arp_density(hand, 0.0)
+        store.set_arp_register_lo(hand, lo)
+        store.set_arp_register_hi(hand, hi)
+        store.set_arp_gate(hand, 0.5)
+        store.set_arp_gain(hand, 0.7)
+        store.set_arp_enable(hand, True)
+        _snap_arp_settled(store, hand)
+
+    advance_arp(0.01, store)
+
+    all_ids: set[int] = set()
+    for hand in (0, 1, 2, 3):
+        voices = _active_arp_voices(store, hand=hand)
+        assert voices, f"H={hand} should sustain a voice"
+        center = expected_center[hand]
+        assert center in voices
+        vid = voices[center].voice_id
+        assert vid == arp_voice_id(hand, center)
+        lo_b, hi_b = expected_band[hand]
+        assert lo_b <= vid <= hi_b
+        assert voices[center].envelope_profile == "pluck"
+        assert vid not in all_ids
+        all_ids.add(vid)
+
+    assert len(all_ids) == 4
 
 
 def test_h1_direction_zero_cross_retriggers() -> None:
@@ -590,20 +685,25 @@ def test_perc_hits_do_not_reduce_melodic_norm() -> None:
 
 
 def test_panic_clears_both_hands_and_perc() -> None:
-    """panic() clears arp state for both hands and the perc pool."""
+    """panic() clears arp state for all four hands and the perc pool."""
     store = VoiceParameterStore()
     store.update_f1(40.0)
 
     _configure_arp(store, rate=4.0, direction=1.0, lo=1, hi=8, gate=0.5)
     store._arp_state[0]["cursor_n"] = 5
     store._arp_state[0]["step_phase"] = 0.4
-    store.set_arp_enable(1, True)
-    store.set_arp_rate(1, 3.0)
-    store.set_arp_register_lo(1, 10)
-    store.set_arp_register_hi(1, 16)
-    _snap_arp_settled(store, 1)
-    store._arp_state[1]["cursor_n"] = 12
-    store._arp_state[1]["step_phase"] = 0.7
+    for hand, (lo, hi, cursor, phase) in {
+        1: (10, 16, 12, 0.7),
+        2: (1, 8, 4, 0.3),
+        3: (8, 16, 10, 0.5),
+    }.items():
+        store.set_arp_enable(hand, True)
+        store.set_arp_rate(hand, 3.0)
+        store.set_arp_register_lo(hand, lo)
+        store.set_arp_register_hi(hand, hi)
+        _snap_arp_settled(store, hand)
+        store._arp_state[hand]["cursor_n"] = cursor
+        store._arp_state[hand]["step_phase"] = phase
     advance_arp(0.1, store)
 
     _configure_perc(store, rate=4.0, bpm=120.0)
@@ -615,8 +715,8 @@ def test_panic_clears_both_hands_and_perc() -> None:
     # All voices inactive.
     assert store.get_snapshot() == {}
 
-    # Both arp hands reset to defaults (cursor 1, phase 0, no pending).
-    for hand in (0, 1):
+    # All arp hands H=0..3 reset to defaults (cursor 1, phase 0, no pending).
+    for hand in (0, 1, 2, 3):
         st = store.get_arp_state(hand)
         assert st["cursor_n"] == 1
         assert st["step_phase"] == 0.0

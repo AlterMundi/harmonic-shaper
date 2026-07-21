@@ -145,7 +145,7 @@ class ShaperOSCReceiver:
         dispatcher.map("/digital/clock/bpm", self._on_clock_bpm)
         dispatcher.map("/digital/settle_beats", self._on_settle_beats)
         dispatcher.map("/digital/generator/enable", self._on_generator_enable)
-        # Arpeggiator H=0, H=1. Path form /digital/arp/{H}/param.
+        # Arpeggiator H=0..3 (wildcard). Path form /digital/arp/{H}/param.
         dispatcher.map("/digital/arp/*/enable", self._on_arp_enable)
         dispatcher.map("/digital/arp/*/rate", self._on_arp_rate)
         dispatcher.map("/digital/arp/*/direction", self._on_arp_direction)
@@ -236,7 +236,7 @@ class ShaperOSCReceiver:
             h = int(addr.split("/")[3])
         except (IndexError, ValueError):
             return None
-        # MVP: H=0 only; accept 0..7 for forward-compatible addressing.
+        # Implemented H=0..3; accept 0..7 for forward-compatible addressing.
         return h if 0 <= h <= 7 else None
 
     def _on_arp_enable(self, addr, value, *_) -> None:

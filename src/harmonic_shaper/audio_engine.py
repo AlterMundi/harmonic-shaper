@@ -143,7 +143,7 @@ class AudioEngine:
         # ── LFO + beat clock, then Shaper-owned generators ────────────
         lfo_val = self._store.advance_lfo(dt)  # -1..+1; also advances beat phase
         lfo_amount = self._store.get_lfo_amount()  # global 0..1
-        # Arpeggiator (H=0, H=1) + foot percussion (separate pool / norm).
+        # Arpeggiator (H=0..3) + foot percussion (separate pool / norm).
         self._store.advance_arp(dt)
         self._store.advance_perc(dt)
 
