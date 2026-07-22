@@ -356,7 +356,8 @@ class VoiceParameterStore:
             if envelope_gain == 0.0:
                 if voice.voice_id == voice_id:
                     voice.active = False
-                    voice.gain = 0.0
+                    # Don't zero gain — let the audio engine's release envelope
+                    # ramp the voice out gracefully over release_s seconds.
                     if harmonic_n in self._active_history:
                         self._active_history.remove(harmonic_n)
                     self._recompute_poly_gains()
