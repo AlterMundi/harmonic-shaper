@@ -121,6 +121,35 @@
       "listener_port": 9002
     },
     {
+      "name": "harmonic_trigger",
+      "address_pattern": "/digital/harmonic/{N}/trigger",
+      "parameters": {
+        "N": {
+          "type": "int32",
+          "bounds": [
+            1,
+            32
+          ]
+        }
+      },
+      "arguments": [
+        {
+          "name": "amplitude",
+          "type": "float32",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "polarity": "Positive values commit a transient pluck target; the audio callback chases it with the per-store pluck attack/release envelopes (default 10 ms / 250 ms). 0 zeros the target only — the sustain envelope is independent and unaffected. Phase is never reset on a trigger."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate store write to the pluck target; ramped in the audio callback. Layered ON TOP of the sustain envelope (harmonic_envelope) without phase reset.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
       "name": "harmonic_pan",
       "address_pattern": "/digital/harmonic/{N}/pan",
       "parameters": {

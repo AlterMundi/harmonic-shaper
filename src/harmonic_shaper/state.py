@@ -198,6 +198,17 @@ class VoiceParameterStore:
         self._lfo_phase: float = 0.0             # 0..1, advances in audio callback
         self._strum_period_s: float = config.DEFAULT_STRUM_PERIOD_S
         self._voice_base_gain: dict[int, float] = {}  # unscaled gain per voice
+        # Source-owned pluck envelope per voice. Layers ON TOP of the sustain
+        # envelope without resetting the phase or affecting the sustain gate.
+        # Used by body-driven onset events (/digital/harmonic/{N}/trigger):
+        # pluck_target = amplitude the last trigger asked for; pluck_env
+        # chases the target with pluck_attack_s (rising) and pluck_release_s
+        # (falling). pluck_target=0 only zeros the target — sustain keeps its
+        # own envelope and is unaffected.
+        self._pluck_target: dict[int, float] = {}
+        self._pluck_env: dict[int, float] = {}
+        self._pluck_attack_s: float = 0.010
+        self._pluck_release_s: float = 0.250
         self._strum_times: list[float] = []       # recent strum timestamps
         # Scene mask over the fixed 1..32 harmonic grid (not voice state).
         # High partials above the ceiling enter natural release in the audio
@@ -347,7 +358,6 @@ class VoiceParameterStore:
         releases only the matching envelope voice, preserving a differently
         owned MIDI or beacon voice on the same harmonic.
         """
-
         envelope_gain = max(0.0, min(1.0, float(gain)))
         voice_id = self._envelope_voice_id(harmonic_n)
         with self._lock:
@@ -375,6 +385,68 @@ class VoiceParameterStore:
                     self._voices[oldest_n].active = False
                 self._recompute_poly_gains()
         self._notify()
+
+    def set_harmonic_trigger(self, harmonic_n: int, amplitude: float) -> None:
+        """Set a source-owned pluck envelope amplitude for one series harmonic.
+
+        A trigger adds a transient pluck on top of the sustain envelope
+        without resetting the phase and without affecting the sustain gate.
+        amplitude=0 only zeros the pluck target — the sustain envelope
+        continues on its own. amplitude>0 commits a target that the audio
+        callback chases with pluck_attack_s (rising) and pluck_release_s
+        (falling) before the next envelope can re-fire.
+
+        Different from harmonic_envelope: this is a transient accent, not a
+        sustain gate. Same source-owned semantics: pluck_target=0 does NOT
+        release the sustain envelope.
+        """
+        target = max(0.0, min(1.0, float(amplitude)))
+        with self._lock:
+            self._ensure(harmonic_n)
+            self._pluck_target[harmonic_n] = target
+            if target > 0.0:
+                # Make sure the voice is in the active history so the audio
+                # engine ramps the pluck envelope on it. Do NOT touch the
+                # sustain envelope or the voice's existing ownership — the
+                # pluck is a layer, not a takeover.
+                voice = self._voices[harmonic_n]
+                if not voice.active:
+                    voice.voice_id = self._envelope_voice_id(harmonic_n)
+                    voice.freq = self.f1 * harmonic_n
+                    voice.active = True
+                    self._voice_base_gain.setdefault(harmonic_n, 0.0)
+                    if harmonic_n in self._active_history:
+                        self._active_history.remove(harmonic_n)
+                    self._active_history.append(harmonic_n)
+                    while len(self._active_history) > config.MAX_VOICES:
+                        oldest_n = self._active_history.pop(0)
+                        self._voices[oldest_n].active = False
+                    self._recompute_poly_gains()
+        self._notify()
+
+    def get_pluck_state(self, harmonic_n: int) -> tuple[float, float]:
+        """Snapshot (pluck_env, pluck_target) for the audio callback."""
+        with self._lock:
+            return (
+                self._pluck_env.get(harmonic_n, 0.0),
+                self._pluck_target.get(harmonic_n, 0.0),
+            )
+
+    def set_pluck_attack(self, seconds: float) -> None:
+        with self._lock:
+            self._pluck_attack_s = max(0.0, float(seconds))
+
+    def set_pluck_release(self, seconds: float) -> None:
+        with self._lock:
+            self._pluck_release_s = max(0.0, float(seconds))
+
+    def get_pluck_attack(self) -> float:
+        with self._lock:
+            return self._pluck_attack_s
+
+    def get_pluck_release(self) -> float:
+        with self._lock:
+            return self._pluck_release_s
 
     def set_gain(self, harmonic_n: int, gain: float) -> None:
         with self._lock:
