@@ -197,6 +197,7 @@ class VoiceParameterStore:
         self._lfo_amount: float = config.DEFAULT_LFO_AMOUNT
         self._lfo_phase: float = 0.0             # 0..1, advances in audio callback
         self._strum_period_s: float = config.DEFAULT_STRUM_PERIOD_S
+        self._voice_base_gain: dict[int, float] = {}  # unscaled gain per voice
         self._strum_times: list[float] = []       # recent strum timestamps
         # Scene mask over the fixed 1..32 harmonic grid (not voice state).
         # High partials above the ceiling enter natural release in the audio
@@ -230,6 +231,22 @@ class VoiceParameterStore:
             except Exception:
                 pass
 
+    def _recompute_poly_gains(self) -> None:
+        """Scale every active voice so total RMS power stays roughly constant.
+        
+        Known polyphonic-synth strategy: individual gain = base_gain / sqrt(N).
+        With 1 voice at gain=0.8, total is 0.8.  With 4 voices, each at
+        0.8/sqrt(4)=0.4, total ≈ sqrt(4*(0.4²)) = 0.8.  Power stays bounded.
+        """
+        n = max(1, len(self._active_history))
+        factor = 1.0 / math.sqrt(n)
+        for harmonic_n in self._active_history:
+            v = self._voices.get(harmonic_n)
+            if v is None:
+                continue
+            base = self._voice_base_gain.get(harmonic_n, v.gain)
+            v.gain = max(0.0, min(1.0, base * factor))
+
     def _ensure(self, n: int) -> None:
         if n not in self._voices:
             v = VoiceParams(harmonic_n=n)
@@ -257,6 +274,7 @@ class VoiceParameterStore:
                 v.gain = max(0.0, min(1.0, float(gain)))
             else:
                 v.gain = config.DEFAULT_VOICE_GAIN
+            self._voice_base_gain[harmonic_n] = v.gain
             if envelope_profile is not None:
                 v.apply_envelope_profile(envelope_profile)
 
@@ -268,6 +286,7 @@ class VoiceParameterStore:
             while len(self._active_history) > config.MAX_VOICES:
                 oldest_n = self._active_history.pop(0)
                 self._voices[oldest_n].active = False
+            self._recompute_poly_gains()
         self._notify()
 
     def voice_off(self, voice_id: int) -> None:
@@ -285,6 +304,7 @@ class VoiceParameterStore:
                     v.active = False
                     if n in self._active_history:
                         self._active_history.remove(n)
+                    self._recompute_poly_gains()
                     break
         self._notify()
 
@@ -339,10 +359,12 @@ class VoiceParameterStore:
                     voice.gain = 0.0
                     if harmonic_n in self._active_history:
                         self._active_history.remove(harmonic_n)
+                    self._recompute_poly_gains()
             else:
                 voice.voice_id = voice_id
                 voice.freq = self.f1 * harmonic_n
                 voice.gain = envelope_gain
+                self._voice_base_gain[harmonic_n] = envelope_gain
                 voice.active = True
                 if harmonic_n in self._active_history:
                     self._active_history.remove(harmonic_n)
@@ -350,12 +372,15 @@ class VoiceParameterStore:
                 while len(self._active_history) > config.MAX_VOICES:
                     oldest_n = self._active_history.pop(0)
                     self._voices[oldest_n].active = False
+                self._recompute_poly_gains()
         self._notify()
 
     def set_gain(self, harmonic_n: int, gain: float) -> None:
         with self._lock:
             self._ensure(harmonic_n)
-            self._voices[harmonic_n].gain = max(0.0, min(1.0, float(gain)))
+            base = max(0.0, min(1.0, float(gain)))
+            self._voice_base_gain[harmonic_n] = base
+            self._recompute_poly_gains()
         self._notify()
 
     def set_pan(self, harmonic_n: int, pan: float) -> None:
