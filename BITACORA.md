@@ -1,5 +1,6 @@
 # BITACORA
 
+- 2026-07-24: **harmonic_trigger capability** on branch `feat/pads-v2` (2 commits, NOT merged to main). Source-owned pluck envelope (`/digital/harmonic/{N}/trigger`, amplitude float [0,1]). `_pluck_env` per voice chases `_pluck_target` with pluck_attack_s (10ms)/pluck_release_s (250ms). Phase never reset. Contract id rotated `e405304b`→`cac459b4`. 5 FFT audio tests confirm harmonic switching at waveform level. 119 passed / 3 pre-existing failures. Branch `feat/pads-v2`.
 - 2026-07-18: repo scaffolded.
 - 2026-07-18: T2.2 extracted and reconciled the standalone Shaper from digital-beacon; NaturalHarmony Minilab3 support recovered; headless and contract tests added.
 - 2026-07-19: Added source-owned `harmonic_envelope` to the native `/digital/harmonic/{N}` contract. Positive envelopes activate the exact `f1*n` partial; zero releases only the envelope source, so body-driven releases cannot turn off keyboard-owned voices. The contract ID is `763efea4f567f6c9396b13b7af33c540`.
