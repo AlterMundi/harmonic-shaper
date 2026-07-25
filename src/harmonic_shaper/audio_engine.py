@@ -249,7 +249,22 @@ class AudioEngine:
                 sine = np.tanh(sine * drive) / np.tanh(drive)
 
             voice_norm = norm_perc if is_perc else norm_melodic
-            sine *= float(mod_gain) * voice_norm * new_env
+            # ── Pluck envelope (source-owned transient on top of sustain).
+            pluck_env, pluck_target = self._store.get_pluck_state(params.harmonic_n)
+            if pluck_env != pluck_target:
+                if pluck_target > pluck_env:
+                    pluck_rate = 1.0 / max(self._store.get_pluck_attack(), 1e-4)
+                    pluck_env = min(pluck_target, pluck_env + pluck_rate * dt)
+                else:
+                    pluck_rate = 1.0 / max(self._store.get_pluck_release(), 1e-4)
+                    pluck_env = max(pluck_target, pluck_env - pluck_rate * dt)
+                self._store._pluck_env[params.harmonic_n] = pluck_env
+            # Pluck contributes its full amplitude (1.0 at peak) on top of
+            # sustain. Clamped to [0, 1.2] for headroom before the poly 1/√N
+            # norm; the norm keeps total power bounded regardless.
+            voice_contribution = float(mod_gain) * voice_norm * new_env
+            voice_contribution = min(1.2, voice_contribution + pluck_env * voice_norm)
+            sine *= voice_contribution
             state["phase"] = (
                 carrier_phases[-1] + 2.0 * np.pi * params.freq / self._sample_rate
             ) % (2.0 * np.pi)

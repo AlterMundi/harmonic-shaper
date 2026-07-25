@@ -42,6 +42,8 @@ def test_local_osc_table_stays_wire_compatible() -> None:
         "/beacon/level",
         "/digital/harmonic/*/gain",
         "/digital/harmonic/*/envelope",
+        "/digital/harmonic/*/envelope/*",
+        "/digital/harmonic/*/trigger",
         "/digital/harmonic/*/pan",
         "/digital/harmonic/*/phase",
         "/digital/master",
