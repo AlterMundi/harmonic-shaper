@@ -662,26 +662,27 @@ def test_perc_hits_do_not_reduce_melodic_norm() -> None:
     norm_after = 1.0 / (n_after ** 0.5)
     assert abs(norm_after - norm_before) < 1e-12
 
-    # Melodic voices keep their gains; perc lives on dedicated keys.
-    assert snap_after[1].gain == 1.0
-    assert snap_after[2].gain == 1.0
+    # Perc leaves melodic equal-power normalization unchanged and uses
+    # dedicated keys of its own.
+    assert snap_after[1].gain == norm_before
+    assert snap_after[2].gain == norm_before
     perc = _active_perc_voices(store)
     assert perc, "expected active perc voice"
     for key in perc:
         assert key not in (1, 2)
         assert is_perc_voice_id(perc[key].voice_id)
 
-    # Engine path: melodic voices still present with full gain after callback.
+    # Engine path: melodic voices retain the same normalized gain.
     import numpy as np
 
     out = np.zeros((256, 2), dtype=np.float32)
     engine._audio_callback(out, 256, None, None)
-    # Melodic snapshot still at gain 1.0 after audio tick.
+    # Melodic snapshot still has the same normalized gain after audio tick.
     snap = store.get_snapshot()
     if 1 in snap:
-        assert snap[1].gain == 1.0
+        assert snap[1].gain == norm_before
     if 2 in snap:
-        assert snap[2].gain == 1.0
+        assert snap[2].gain == norm_before
 
 
 def test_panic_clears_both_hands_and_perc() -> None:

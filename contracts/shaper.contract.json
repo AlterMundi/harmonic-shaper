@@ -150,6 +150,42 @@
       "listener_port": 9002
     },
     {
+      "name": "harmonic_source_envelope",
+      "address_pattern": "/digital/harmonic/{N}/envelope/{S}",
+      "parameters": {
+        "N": {
+          "type": "int32",
+          "bounds": [
+            1,
+            32
+          ]
+        },
+        "S": {
+          "type": "int32",
+          "bounds": [
+            0,
+            15
+          ]
+        }
+      },
+      "arguments": [
+        {
+          "name": "gain",
+          "type": "float32",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "polarity": "Positive values activate source S's hold on f1*N; 0 releases only S. A harmonic remains active while any source holds it."
+        }
+      ],
+      "lag_ms": 0.0,
+      "smoothing": "Immediate source-state write; the audio envelope applies attack/release when the aggregate harmonic state changes.",
+      "read": true,
+      "write": true,
+      "listener_port": 9002
+    },
+    {
       "name": "harmonic_pan",
       "address_pattern": "/digital/harmonic/{N}/pan",
       "parameters": {

@@ -198,6 +198,11 @@ class VoiceParameterStore:
         self._lfo_phase: float = 0.0             # 0..1, advances in audio callback
         self._strum_period_s: float = config.DEFAULT_STRUM_PERIOD_S
         self._voice_base_gain: dict[int, float] = {}  # unscaled gain per voice
+        # Native body envelopes are keyed by (harmonic, source). A harmonic is
+        # active while at least one source holds it; its gain is the strongest
+        # active contribution, so two people touching the same pad do not steal
+        # or prematurely release each other's sound.
+        self._source_envelope_gains: dict[int, dict[int, float]] = {}
         # Source-owned pluck envelope per voice. Layers ON TOP of the sustain
         # envelope without resetting the phase or affecting the sustain gate.
         # Used by body-driven onset events (/digital/harmonic/{N}/trigger):
@@ -351,6 +356,44 @@ class VoiceParameterStore:
     def _envelope_voice_id(cls, harmonic_n: int) -> int:
         return cls._ENVELOPE_VOICE_ID_BASE - harmonic_n
 
+    def _set_harmonic_envelope_source_locked(
+        self, harmonic_n: int, source: int, gain: float
+    ) -> None:
+        envelope_gain = max(0.0, min(1.0, float(gain)))
+        source_gains = self._source_envelope_gains.setdefault(harmonic_n, {})
+        if envelope_gain == 0.0:
+            source_gains.pop(source, None)
+        else:
+            source_gains[source] = envelope_gain
+
+        voice_id = self._envelope_voice_id(harmonic_n)
+        self._ensure(harmonic_n)
+        voice = self._voices[harmonic_n]
+        if not source_gains:
+            self._source_envelope_gains.pop(harmonic_n, None)
+            if voice.voice_id == voice_id:
+                voice.active = False
+                # Don't zero gain — let the audio engine's release envelope
+                # ramp the voice out gracefully over release_s seconds.
+                if harmonic_n in self._active_history:
+                    self._active_history.remove(harmonic_n)
+                self._recompute_poly_gains()
+            return
+
+        envelope_gain = max(source_gains.values())
+        voice.voice_id = voice_id
+        voice.freq = self.f1 * harmonic_n
+        voice.gain = envelope_gain
+        self._voice_base_gain[harmonic_n] = envelope_gain
+        voice.active = True
+        if harmonic_n in self._active_history:
+            self._active_history.remove(harmonic_n)
+        self._active_history.append(harmonic_n)
+        while len(self._active_history) > config.MAX_VOICES:
+            oldest_n = self._active_history.pop(0)
+            self._voices[oldest_n].active = False
+        self._recompute_poly_gains()
+
     def set_harmonic_envelope(self, harmonic_n: int, gain: float) -> None:
         """Set a source-owned native envelope for one series harmonic.
 
@@ -358,32 +401,22 @@ class VoiceParameterStore:
         releases only the matching envelope voice, preserving a differently
         owned MIDI or beacon voice on the same harmonic.
         """
-        envelope_gain = max(0.0, min(1.0, float(gain)))
-        voice_id = self._envelope_voice_id(harmonic_n)
         with self._lock:
-            self._ensure(harmonic_n)
-            voice = self._voices[harmonic_n]
-            if envelope_gain == 0.0:
-                if voice.voice_id == voice_id:
-                    voice.active = False
-                    # Don't zero gain — let the audio engine's release envelope
-                    # ramp the voice out gracefully over release_s seconds.
-                    if harmonic_n in self._active_history:
-                        self._active_history.remove(harmonic_n)
-                    self._recompute_poly_gains()
-            else:
-                voice.voice_id = voice_id
-                voice.freq = self.f1 * harmonic_n
-                voice.gain = envelope_gain
-                self._voice_base_gain[harmonic_n] = envelope_gain
-                voice.active = True
-                if harmonic_n in self._active_history:
-                    self._active_history.remove(harmonic_n)
-                self._active_history.append(harmonic_n)
-                while len(self._active_history) > config.MAX_VOICES:
-                    oldest_n = self._active_history.pop(0)
-                    self._voices[oldest_n].active = False
-                self._recompute_poly_gains()
+            self._set_harmonic_envelope_source_locked(harmonic_n, source=-1, gain=gain)
+        self._notify()
+
+    def set_harmonic_source_envelope(self, harmonic_n: int, source: int, gain: float) -> None:
+        """Set an independent body-source envelope for one series harmonic.
+
+        A source can release its own hold without affecting other hands or
+        people on the same partial. The audible gain is the strongest active
+        source contribution; one sine voice per harmonic avoids duplicate-phase
+        buildup while preserving independent lifecycle ownership.
+        """
+        if not 0 <= int(source) <= 15:
+            raise ValueError("source must be in 0..15")
+        with self._lock:
+            self._set_harmonic_envelope_source_locked(harmonic_n, int(source), gain)
         self._notify()
 
     def set_harmonic_trigger(self, harmonic_n: int, amplitude: float) -> None:
@@ -453,6 +486,8 @@ class VoiceParameterStore:
             self._ensure(harmonic_n)
             base = max(0.0, min(1.0, float(gain)))
             self._voice_base_gain[harmonic_n] = base
+            if not self._voices[harmonic_n].active:
+                self._voices[harmonic_n].gain = base
             self._recompute_poly_gains()
         self._notify()
 

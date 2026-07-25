@@ -149,3 +149,25 @@ def test_envelope_zero_silences_voice():
     assert tail_rms < 0.002, (
         f"Voice should be silent after release; RMS = {tail_rms:.6f}"
     )
+
+
+def test_source_owned_holds_share_a_harmonic_until_last_release() -> None:
+    """Two hands on one pad produce one sustained partial until both leave."""
+    store = VoiceParameterStore()
+    store.update_f1(F1)
+    store.set_harmonic_source_envelope(5, source=0, gain=0.7)
+    store.set_harmonic_source_envelope(5, source=1, gain=0.9)
+    engine = AudioEngine(store, sample_rate=SR, block_size=BLOCK)
+
+    audio = _render_blocks(engine, int(SR / BLOCK * 1.0))
+    assert abs(_dominant_frequency(audio, SR) - F1 * 5) < TOL_HZ
+
+    store.set_harmonic_source_envelope(5, source=0, gain=0.0)
+    assert store.get_snapshot()[5].active is True
+    still_held = _render_blocks(engine, int(SR / BLOCK * 0.25))
+    assert float(np.sqrt(np.mean(still_held.astype(np.float64) ** 2))) > 0.01
+
+    store.set_harmonic_source_envelope(5, source=1, gain=0.0)
+    released = _render_blocks(engine, int(SR / BLOCK * 1.0))
+    tail_rms = float(np.sqrt(np.mean(released[int(0.3 * SR):].astype(np.float64) ** 2)))
+    assert tail_rms < 0.002, f"Source-owned harmonic should release, RMS = {tail_rms:.6f}"

@@ -58,6 +58,37 @@ def test_harmonic_envelope_release_preserves_different_voice_owner() -> None:
     assert voice.gain == 0.7
 
 
+def test_source_envelopes_keep_a_shared_harmonic_alive_until_every_hand_releases() -> None:
+    """Independent body hands may own the same partial without stealing it."""
+    store = VoiceParameterStore()
+    store.update_f1(40.0)
+
+    store.set_harmonic_source_envelope(5, source=0, gain=0.4)
+    store.set_harmonic_source_envelope(5, source=1, gain=0.8)
+    voice = store.get_snapshot()[5]
+    assert voice.active is True
+    assert voice.freq == 200.0
+    assert voice.gain == 0.8
+
+    store.set_harmonic_source_envelope(5, source=0, gain=0.0)
+    assert store.get_snapshot()[5].active is True
+    assert store.get_snapshot()[5].gain == 0.8
+
+    store.set_harmonic_source_envelope(5, source=1, gain=0.0)
+    assert 5 not in store.get_snapshot()
+
+
+def test_source_envelope_osc_handler_preserves_source_identity() -> None:
+    store = VoiceParameterStore()
+    receiver = object.__new__(ShaperOSCReceiver)
+    receiver._store = store
+
+    receiver._on_source_envelope("/digital/harmonic/7/envelope/3", 0.6)
+    assert store.get_snapshot()[7].active is True
+    receiver._on_source_envelope("/digital/harmonic/7/envelope/3", 0.0)
+    assert 7 not in store.get_snapshot()
+
+
 def test_store_thread_safety_smoke() -> None:
     store = VoiceParameterStore()
     # Exercise re-entrant reads from the state-change callback too.
