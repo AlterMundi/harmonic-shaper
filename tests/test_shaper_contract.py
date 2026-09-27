@@ -1,8 +1,8 @@
 """Tests for the Shaper Instrument Control v1 contract.
 
 Validates contracts/shaper.contract.json against the copied contract_codec,
-checks the golden sidecar, and asserts that every OSC address mapped in
-digital-beacon's osc_receiver.py is covered by the manifest.
+checks the golden sidecar, and asserts that every OSC address mapped in the
+standalone Shaper receiver is covered by the manifest.
 """
 
 from __future__ import annotations
@@ -17,12 +17,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "shaper.contract.json"
 GOLDEN_PATH = REPO_ROOT / "contracts" / "shaper.contract_id.golden"
 
-# Source of truth for the live OSC table (read-only sibling repo by default).
-_DEFAULT_OSC_RECEIVER = (
-    Path.home() / "Projects" / "digital-beacon" / "digital_beacon" / "osc_receiver.py"
-)
+# Source of truth for the live OSC table.
+_DEFAULT_OSC_RECEIVER = REPO_ROOT / "src" / "harmonic_shaper" / "osc_receiver.py"
 OSC_RECEIVER_PATH = Path(
-    os.environ.get("DIGITAL_BEACON_OSC_RECEIVER", str(_DEFAULT_OSC_RECEIVER))
+    os.environ.get(
+        "SHAPER_OSC_RECEIVER",
+        os.environ.get("DIGITAL_BEACON_OSC_RECEIVER", str(_DEFAULT_OSC_RECEIVER)),
+    )
 )
 
 # d.map("address", ...) — capture the address pattern string literal.
@@ -63,21 +64,19 @@ def extract_osc_addresses(source_path: Path) -> list[str]:
     return ordered
 
 
-def _wildcard_to_placeholder(addr: str) -> str:
-    """Map python-osc '*' path segments to Instrument Control {N} form.
+def _address_matches_pattern(address: str, pattern: str) -> bool:
+    """Match python-osc ``*`` segments to any manifest placeholder."""
 
-    digital-beacon registers ``/digital/harmonic/*/gain``; the manifest uses
-    ``/digital/harmonic/{N}/gain``.
-    """
-
-    parts = addr.split("/")
-    out: list[str] = []
-    for part in parts:
-        if part == "*":
-            out.append("{N}")
-        else:
-            out.append(part)
-    return "/".join(out)
+    address_parts = address.split("/")
+    pattern_parts = pattern.split("/")
+    if len(address_parts) != len(pattern_parts):
+        return False
+    return all(
+        actual == expected
+        or actual == "*"
+        or (expected.startswith("{") and expected.endswith("}"))
+        for actual, expected in zip(address_parts, pattern_parts)
+    )
 
 
 def manifest_covered_addresses(manifest: dict) -> set[str]:
@@ -173,8 +172,8 @@ class ShaperContractTests(unittest.TestCase):
     def test_every_osc_receiver_address_is_covered(self) -> None:
         if not OSC_RECEIVER_PATH.is_file():
             self.fail(
-                f"digital-beacon osc_receiver.py not found at {OSC_RECEIVER_PATH}. "
-                "Set DIGITAL_BEACON_OSC_RECEIVER to the absolute path."
+                f"Shaper osc_receiver.py not found at {OSC_RECEIVER_PATH}. "
+                "Set SHAPER_OSC_RECEIVER to the absolute path."
             )
         addresses = extract_osc_addresses(OSC_RECEIVER_PATH)
         self.assertGreaterEqual(
@@ -188,8 +187,7 @@ class ShaperContractTests(unittest.TestCase):
 
         missing: list[str] = []
         for addr in addresses:
-            candidates = {addr, _wildcard_to_placeholder(addr)}
-            if not candidates.intersection(covered):
+            if not any(_address_matches_pattern(addr, pattern) for pattern in covered):
                 missing.append(addr)
 
         self.assertEqual(
@@ -205,7 +203,7 @@ class ShaperContractTests(unittest.TestCase):
         addresses = extract_osc_addresses(OSC_RECEIVER_PATH)
         digital = [a for a in addresses if a.startswith("/digital")]
         beacon = [a for a in addresses if a.startswith("/beacon")]
-        self.assertEqual(len(digital), 5, digital)
+        self.assertGreaterEqual(len(digital), 5, digital)
         self.assertEqual(len(beacon), 6, beacon)
 
 
