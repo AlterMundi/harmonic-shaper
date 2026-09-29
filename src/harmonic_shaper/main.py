@@ -203,7 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .api import create_app
 
             api_config = uvicorn.Config(
-                create_app(store),
+                create_app(store, audio=audio),
                 host=args.api_host,
                 port=args.api_port,
                 log_level="warning",

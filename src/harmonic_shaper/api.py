@@ -21,7 +21,7 @@ from .state import VoiceParameterStore
 log = logging.getLogger(__name__)
 
 
-def create_app(store: VoiceParameterStore) -> "FastAPI":
+def create_app(store: VoiceParameterStore, audio=None) -> "FastAPI":
     """Create the extracted Shaper-only HTTP/WebSocket application."""
 
     if not HAS_FASTAPI:
@@ -59,6 +59,24 @@ def create_app(store: VoiceParameterStore) -> "FastAPI":
         event_loop = None
 
     app = FastAPI(title="Harmonic Shaper", version="0.1.0", lifespan=_lifespan)
+    from .laboratory import LaboratoryInput, LaboratoryConflict
+    laboratory = getattr(store, "laboratory_input", None) or LaboratoryInput(store)
+    store.laboratory_input = laboratory
+
+    @app.post("/api/laboratory/frame")
+    async def laboratory_frame(body: dict) -> dict:
+        try:
+            return laboratory.apply(body)
+        except LaboratoryConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/audio/voices")
+    async def audio_voices() -> dict:
+        if audio is None:
+            raise HTTPException(503, "audio engine is disabled")
+        return audio.voice_frame()
 
     def _on_change() -> None:
         if event_loop is None or not event_loop.is_running():

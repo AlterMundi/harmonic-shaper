@@ -12,6 +12,7 @@ Adapted from NaturalHarmony/harmonic_shaper/audio_engine.py:
 
 import logging
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -53,6 +54,19 @@ class AudioEngine:
         self._running = False
         self._lock = threading.RLock()
         self._record_sink: Optional[list] = None
+        self._sample_index = 0
+        self._telemetry = None
+
+    def voice_frame(self) -> dict:
+        """Latest immutable block snapshot, serialized outside the audio callback."""
+        frame = self._telemetry
+        if frame is None:
+            return {"schema_version": 1, "sample_index": 0, "sample_rate": self._sample_rate,
+                    "block_frames": self._block_size, "generated_monotonic_s": time.monotonic(),
+                    "output_dac_time_s": None, "running": False,
+                    "stage": "oscillators_pre_shape_limiter", "voices": []}
+        return {**frame, "running": self._running,
+                "voices": [dict(voice) for voice in frame["voices"]]}
 
     def _resolve_stream_params(self) -> tuple[int, Optional[int | str]]:
         """Resolve the effective (sample_rate, device) for the stream.
@@ -82,6 +96,9 @@ class AudioEngine:
             detail = str(SOUNDDEVICE_IMPORT_ERROR or "not installed")
             raise ImportError(f"sounddevice/PortAudio is required: {detail}")
         sample_rate, device = self._resolve_stream_params()
+        # The callback may run inside start(); use the actual device rate already.
+        self._sample_rate = sample_rate
+        self._device = device
         self._stream = sd.OutputStream(
             samplerate=sample_rate,
             blocksize=self._block_size,
@@ -136,6 +153,10 @@ class AudioEngine:
         return "(sounddevice not installed)"
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
+        generated = time.monotonic()
+        laboratory = getattr(self._store, "laboratory_input", None)
+        if laboratory is not None:
+            laboratory.expire(generated)
         if status:
             log.debug("Audio status: %s", status)
         dt = frames / self._sample_rate
@@ -192,6 +213,7 @@ class AudioEngine:
         partial_ceiling = self._store.get_partial_ceiling()
 
         mix = np.zeros((frames, 2), dtype=np.float32)
+        voice_telemetry = []
 
         to_prune = []
         for n, state in self._voice_state.items():
@@ -265,6 +287,11 @@ class AudioEngine:
             voice_contribution = float(mod_gain) * voice_norm * new_env
             voice_contribution = min(1.2, voice_contribution + pluck_env * voice_norm)
             sine *= voice_contribution
+            voice_telemetry.append({"voice_id": int(params.voice_id if params.voice_id is not None else n),
+                                    "harmonic_n": int(params.harmonic_n), "frequency_hz": float(params.freq),
+                                    "gain": float(voice_contribution), "phase_rad": float((start_phase+mod_phase) % (2*np.pi)),
+                                    "envelope": float(new_env), "pan": float(mod_pan), "shape": float(shape),
+                                    "releasing": not params.active})
             state["phase"] = (
                 carrier_phases[-1] + 2.0 * np.pi * params.freq / self._sample_rate
             ) % (2.0 * np.pi)
@@ -285,7 +312,10 @@ class AudioEngine:
             sc_factor = 1.0 + abs(sidechain_amount) * (1.0 - beacon_level)
 
         # Master gain + side-chain + soft limiter
-        mix *= self._store.get_master_gain() * sc_factor
+        master = self._store.get_master_gain() * sc_factor
+        mix *= master
+        for voice in voice_telemetry:
+            voice["gain"] *= master
 
         # ── Recording tap: hand a copy of the final mix to the recorder
         #    BEFORE the soft limiter, so the Recorder can do its own
@@ -296,6 +326,12 @@ class AudioEngine:
 
         mix = soft_limit(mix)
         outdata[:] = mix
+        self._telemetry = {"schema_version": 1, "sample_index": self._sample_index,
+                           "sample_rate": self._sample_rate, "block_frames": frames,
+                           "generated_monotonic_s": generated,
+                           "output_dac_time_s": float(time_info.outputBufferDacTime) if time_info is not None else None,
+                           "stage": "oscillators_pre_shape_limiter", "voices": tuple(voice_telemetry)}
+        self._sample_index += frames
 
     def _on_stream_finished(self) -> None:
         log.warning("Audio stream finished unexpectedly.")
