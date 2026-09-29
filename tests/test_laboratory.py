@@ -63,7 +63,9 @@ def test_telemetry_reconstructs_unshaped_audio_including_effective_gain_and_phas
     reconstructed=np.zeros_like(output)
     t=np.arange(256)/48000
     for voice in frame['voices']:
-        wave=np.sin(2*np.pi*voice['frequency_hz']*t+voice['phase_rad'])*voice['gain']
+        fraction=np.linspace(0.,1.,256)
+        gain=voice['gain']+(voice.get('gain_end',voice['gain'])-voice['gain'])*fraction
+        wave=np.sin(2*np.pi*voice['frequency_hz']*t+voice['phase_rad']+voice.get('phase_offset_delta_rad',0.)*fraction)*gain
         angle=(voice['pan']+1)*np.pi/4
         reconstructed[:,0]+=wave*np.cos(angle)
         reconstructed[:,1]+=wave*np.sin(angle)
@@ -106,3 +108,28 @@ def test_http_surface_applies_frames_and_never_fakes_disabled_audio():
         bad=control(1);bad['voices'][0]['phase_deg']='untyped'
         assert client.post('/api/laboratory/frame',json=bad).status_code==422
         assert client.get('/api/audio/voices').status_code==503
+
+
+def test_lab_gain_phase_and_release_transitions_have_no_boundary_jump():
+    store=VoiceParameterStore();lab=LaboratoryInput(store);store.laboratory_input=lab
+    engine=AudioEngine(store,sample_rate=48000,block_size=256)
+    output=np.zeros((256,2),dtype=np.float32)
+    body=control(n=1)
+    body['voices'][0].update(frequency_hz=80.,phase_deg=90.,gain=.8,release_s=.012)
+    lab.apply(body)
+    engine._audio_callback(output,256,None,None)
+    assert abs(output[0,0]) < 1e-7  # activation starts at zero, even at peak phase
+    previous=output[-1,0]
+    for seq,gain,phase in [(1,.1,-90.),(2,.9,150.),(3,0.,150.)]:
+        body['sequence']=seq
+        body['voices'][0].update(gain=gain,phase_deg=phase)
+        lab.apply(body)
+        engine._audio_callback(output,256,None,None)
+        assert abs(output[0,0]-previous)<.012
+        previous=output[-1,0]
+    for _ in range(8):
+        engine._audio_callback(output,256,None,None)
+        assert abs(output[0,0]-previous)<.012
+        previous=output[-1,0]
+    assert not engine.voice_frame()['voices']
+    assert np.max(np.abs(output))==0

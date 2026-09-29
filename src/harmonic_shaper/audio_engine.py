@@ -253,11 +253,15 @@ class AudioEngine:
 
             state["env"] = new_env
 
+            lab_voice = 7101 <= (params.voice_id or 0) <= 7132
             if not params.active and new_env <= 0.0:
                 to_prune.append(n)
-                continue
+                # Render the final fade block before pruning. Explicit zero-time
+                # silence remains immediate (panic/diagnostic contract).
+                if not lab_voice or release_s <= 0:
+                    continue
 
-            if new_env <= 0.0:
+            if new_env <= 0.0 and not (lab_voice and current_env > 0):
                 continue
 
             # ── LFO modulation per voice ──────────────────────────────
@@ -271,7 +275,16 @@ class AudioEngine:
             t = np.arange(frames, dtype=np.float64) / self._sample_rate
             start_phase = state["phase"]
             carrier_phases = 2.0 * np.pi * params.freq * t + start_phase
-            sine = np.sin(carrier_phases + mod_phase).astype(np.float32)
+            phase_start = mod_phase
+            phase_delta = 0.
+            if lab_voice:
+                phase_start = state.get("rendered_phase_offset", mod_phase)
+                phase_delta = (mod_phase - phase_start + np.pi) % (2*np.pi) - np.pi
+                phase_offsets = phase_start + phase_delta * np.arange(frames) / max(1, frames-1)
+                state["rendered_phase_offset"] = phase_start + phase_delta
+            else:
+                phase_offsets = mod_phase
+            sine = np.sin(carrier_phases + phase_offsets).astype(np.float32)
 
             # ── Waveshaper (didgeridoo/vocal timbre) ──────────────────
             shape = params.shape
@@ -295,10 +308,17 @@ class AudioEngine:
             # norm; the norm keeps total power bounded regardless.
             voice_contribution = float(mod_gain) * voice_norm * new_env
             voice_contribution = min(1.2, voice_contribution + pluck_env * voice_norm)
-            sine *= voice_contribution
+            gain_start = voice_contribution
+            if lab_voice:
+                gain_start = state.get("rendered_gain", 0.)
+                sine *= np.linspace(gain_start, voice_contribution, frames, dtype=np.float32)
+                state["rendered_gain"] = voice_contribution
+            else:
+                sine *= voice_contribution
             voice_telemetry.append({"voice_id": int(params.voice_id if params.voice_id is not None else n),
                                     "harmonic_n": int(params.harmonic_n), "frequency_hz": float(params.freq),
-                                    "gain": float(voice_contribution), "phase_rad": float((start_phase+mod_phase) % (2*np.pi)),
+                                    "gain": float(gain_start), "phase_rad": float((start_phase+phase_start) % (2*np.pi)),
+                                    **({"gain_end": float(voice_contribution), "phase_offset_delta_rad": float(phase_delta)} if lab_voice else {}),
                                     "envelope": float(new_env), "pan": float(mod_pan), "shape": float(shape),
                                     "releasing": not params.active})
             state["phase"] = (
@@ -325,6 +345,8 @@ class AudioEngine:
         mix *= master
         for voice in voice_telemetry:
             voice["gain"] *= master
+            if "gain_end" in voice:
+                voice["gain_end"] *= master
 
         # ── Recording tap: hand a copy of the final mix to the recorder
         #    BEFORE the soft limiter, so the Recorder can do its own
