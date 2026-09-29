@@ -75,6 +75,14 @@ class LaboratoryInput:
                 self._release()
                 self.owner, self.sequence = None, -1
 
+    def release_seconds(self, harmonic_n, voice_id):
+        """Include a release-time edit arriving with the zero-gain frame."""
+        with self.store._lock:
+            voice = self.store._voices.get(harmonic_n)
+            if voice_id == 7100+harmonic_n and voice is not None and voice.voice_id == voice_id:
+                return voice.release_s
+            return None
+
     def apply(self, body, now=None):
         prepared = self.validate(body)
         now = time.monotonic() if now is None else now

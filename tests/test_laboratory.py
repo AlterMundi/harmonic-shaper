@@ -32,6 +32,20 @@ def test_frames_are_atomic_reject_stale_and_preserve_unrelated_voices():
     assert store.get_snapshot()[32].voice_id==999
 
 
+def test_zero_gain_frame_can_request_immediate_silence():
+    store=VoiceParameterStore();lab=LaboratoryInput(store);store.laboratory_input=lab
+    lab.apply(control(n=1))
+    engine=AudioEngine(store,sample_rate=48000,block_size=256)
+    output=np.zeros((256,2),dtype=np.float32)
+    engine._audio_callback(output,256,None,None)
+    assert np.max(np.abs(output))>0
+    stop=control(1,n=1);stop['voices'][0].update(gain=0.,release_s=0.)
+    lab.apply(stop)
+    engine._audio_callback(output,256,None,None)
+    assert np.max(np.abs(output))==0
+    assert not engine.voice_frame()['voices']
+
+
 @pytest.mark.parametrize('count',[1,6,32])
 def test_telemetry_reconstructs_unshaped_audio_including_effective_gain_and_phase(count):
     store=VoiceParameterStore();lab=LaboratoryInput(store)

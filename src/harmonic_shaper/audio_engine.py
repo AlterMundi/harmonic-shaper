@@ -178,7 +178,12 @@ class AudioEngine:
 
         # ── Mark released voices (was tracked, no longer active) ────
         for n in tracked_ns - active_ns:
-            self._voice_state[n]["params"].active = False
+            params = self._voice_state[n]["params"]
+            params.active = False
+            if laboratory is not None:
+                release = laboratory.release_seconds(n, params.voice_id)
+                if release is not None:
+                    params.release_s = release
 
         # ── Update active voices' params ─────────────────────────────
         for n in active_ns & tracked_ns:
