@@ -133,3 +133,22 @@ def test_lab_gain_phase_and_release_transitions_have_no_boundary_jump():
         previous=output[-1,0]
     assert not engine.voice_frame()['voices']
     assert np.max(np.abs(output))==0
+
+
+def test_updates_of_sustained_voice_preserve_oscillator_and_envelope():
+    store=VoiceParameterStore();lab=LaboratoryInput(store);store.laboratory_input=lab
+    engine=AudioEngine(store,sample_rate=48000,block_size=256)
+    output=np.zeros((256,2),dtype=np.float32)
+    state=None
+    for sequence in range(60):
+        body=control(sequence,n=1)
+        body['voices'][0].update(frequency_hz=80.,phase_deg=0.,gain=.2+.1*(sequence%2))
+        lab.apply(body)
+        previous_phase=engine._voice_state[1]['phase'] if state is not None else 0.
+        engine._audio_callback(output,256,None,None)
+        if state is None:
+            state=engine._voice_state[1]
+        assert engine._voice_state[1] is state
+        assert state['env']==1.
+        assert state['phase']==pytest.approx((previous_phase+2*np.pi*80*256/48000)%(2*np.pi))
+        assert not engine.voice_frame()['voices'][0]['releasing']
