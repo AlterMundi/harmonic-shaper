@@ -21,6 +21,16 @@ class LaboratoryInput:
         self.sequence = -1
         self.expires_at = 0.
         self.owned = set()
+        self.applied_monotonic_s = None
+        self.sampled_monotonic_s = None
+
+    def frame_identity(self, sampled=None):
+        with self.store._lock:
+            if sampled is not None and self.sampled_monotonic_s is None and self.owner is not None:
+                self.sampled_monotonic_s = sampled
+            return {"control_owner": self.owner, "control_sequence": self.sequence if self.owner else None,
+                    "control_applied_monotonic_s": self.applied_monotonic_s if self.owner else None,
+                    "control_sampled_monotonic_s": self.sampled_monotonic_s if self.owner else None}
 
     @staticmethod
     def validate(body):
@@ -120,6 +130,8 @@ class LaboratoryInput:
             self.store._recompute_poly_gains()
             self.owned = requested
             self.owner, self.sequence = body["owner"], body["sequence"]
+            self.applied_monotonic_s = now
+            self.sampled_monotonic_s = None
             self.expires_at = now+body["lease_ms"]/1000
         self.store._notify()
         return {"applied_sequence": self.sequence, "owner": self.owner}

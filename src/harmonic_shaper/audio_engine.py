@@ -168,7 +168,11 @@ class AudioEngine:
         self._store.advance_arp(dt)
         self._store.advance_perc(dt)
 
-        voices = self._store.get_snapshot()  # active voices only (post generators)
+        # Read parameters and their control identity atomically: a concurrent
+        # HTTP edit must not label the previous audio block with a newer revision.
+        with self._store._lock:
+            voices = self._store.get_snapshot()  # active voices only (post generators)
+            control_identity = laboratory.frame_identity(time.monotonic()) if laboratory is not None else {}
         active_ns = set(voices.keys())
         tracked_ns = set(self._voice_state.keys())
 
@@ -334,10 +338,12 @@ class AudioEngine:
         self._telemetry = {"schema_version": 1, "sample_index": self._sample_index,
                            "sample_rate": self._sample_rate, "block_frames": frames,
                            "generated_monotonic_s": generated,
+                           **control_identity,
                            "output_dac_time_s": float(time_info.outputBufferDacTime) if time_info is not None else None,
                            "stage": "oscillators_pre_shape_limiter", "voices": tuple(voice_telemetry)}
         self._sample_index += frames
 
     def _on_stream_finished(self) -> None:
-        log.warning("Audio stream finished unexpectedly.")
+        if self._running:
+            log.warning("Audio stream finished unexpectedly.")
         self._running = False

@@ -57,6 +57,9 @@ def test_telemetry_reconstructs_unshaped_audio_including_effective_gain_and_phas
     engine._audio_callback(output,256,SimpleNamespace(outputBufferDacTime=12.),None)
     frame=engine.voice_frame()
     assert frame['sample_index']==0 and len(frame['voices'])==count
+    assert frame['control_owner']=='test' and frame['control_sequence']==0
+    sampled=frame['control_sampled_monotonic_s']
+    assert sampled >= frame['control_applied_monotonic_s']
     reconstructed=np.zeros_like(output)
     t=np.arange(256)/48000
     for voice in frame['voices']:
@@ -69,6 +72,7 @@ def test_telemetry_reconstructs_unshaped_audio_including_effective_gain_and_phas
     engine._audio_callback(output,256,None,None)
     frame=engine.voice_frame()
     assert frame['sample_index']==256
+    assert frame['control_sampled_monotonic_s']==sampled
     assert frame['voices'][0]['phase_rad']==pytest.approx((first_phase+2*np.pi*40.4*256/48000)%(2*np.pi))
     # Snapshot consumers cannot mutate callback state.
     frame['voices'][0]['gain']=100.

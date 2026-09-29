@@ -37,3 +37,12 @@ Hardware-free verification reconstructs the unshaped PCM from telemetry for
 the same limiter. Further tests cover atomic validation, stale/foreign control,
 lease expiry, release tails and HTTP behavior. These do not establish physical
 output latency or human listening acceptance.
+# Rendered control identity
+
+Voice telemetry additionally includes `control_owner`, `control_sequence`,
+`control_applied_monotonic_s` and `control_sampled_monotonic_s`. Parameter snapshot
+and identity are read under the same store lock. The sampled timestamp is the
+first audio callback consuming that control frame and remains stable for its
+subsequent blocks. An HTTP acknowledgement alone does not establish that audio
+has consumed a revision. These timestamps measure host software, not physical
+speaker latency.
