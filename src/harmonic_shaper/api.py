@@ -95,6 +95,17 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
         except (ValueError, TypeError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.post("/api/audio/capture/recover")
+    def recover_audio_capture(body: dict):
+        import re
+        from pathlib import Path
+        from .capture_recovery import recover_capture
+        if set(body)!={"id"} or not isinstance(body["id"],str) or not re.fullmatch(r"[a-f0-9]{32}",body["id"]):
+            raise HTTPException(422,"Expected a capture id, not a filesystem path")
+        root=Path(capture_root or Path.home()/".local/share/harmonic-shaper/laboratory-captures")
+        try:return recover_capture(root/body["id"])
+        except (ValueError,OSError,KeyError) as exc:raise HTTPException(422,str(exc)) from exc
+
     @app.post("/api/audio/capture/stop")
     def stop_capture(body: dict | None = None):
         body = body or {}

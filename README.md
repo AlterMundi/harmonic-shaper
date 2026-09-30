@@ -138,3 +138,14 @@ Verification: `pytest tests/test_capture.py tests/test_offline_render.py
 pre-limiter tap, sample limits/crop, early stop, bounded overflow, disk/clock/stream
 errors, stale stop, concurrent starts and validation/API. These are hardware-free
 checks; real device latency, audiovisual synchronization and listening remain open.
+
+Interrupted capture recovery (POSIX): `POST /api/audio/capture/recover` with
+`{"id":"<32-character capture id>"}`. An advisory writer lock rejects active
+recordings. New captures preserve capture.json and periodically flush audio/journal
+outside the callback. Recovery parses the float WAV header even when length fields
+are stale and writes only complete, contiguous, journal-confirmed blocks to a new
+`recovered/<id>/` folder. Raw WAV/journal/manifests remain unchanged. Result status
+is recovered, never complete; truncated or unconfirmed tails are excluded. This
+handles process interruption, not a guarantee against power loss or disk corruption.
+Legacy captures without the lock/metadata contract are rejected. API accepts IDs
+under its configured capture root, not caller-supplied paths.

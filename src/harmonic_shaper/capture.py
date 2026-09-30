@@ -1,5 +1,6 @@
 """Explicit, bounded post-limiter PCM capture; writer never runs in callback."""
 import json
+import fcntl
 import hashlib
 import platform
 import re
@@ -27,7 +28,7 @@ class PCMCapture:
             raise ValueError("Invalid capture owner")
         package=Path(__file__).resolve().parent
         files={name:hashlib.sha256((package/name).read_bytes()).hexdigest()
-               for name in ('capture.py','audio_engine.py','state.py','laboratory.py','audio_levels.py','config.py')}
+               for name in ('capture.py','capture_recovery.py','audio_engine.py','state.py','laboratory.py','audio_levels.py','config.py')}
         self.code={'files':files,'code_sha256':hashlib.sha256(
             json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
             'python':platform.python_version(),'numpy':np.__version__,'soundfile':sf.__version__}
@@ -48,7 +49,14 @@ class PCMCapture:
         self.status = 'starting'
         self.dropped_blocks = 0
         self.thread = threading.Thread(target=self._write,daemon=True,name='shaper-pcm-writer')
-        self.thread.start()
+        self._writer_lock=(self.folder/'writer.lock').open('w+b')
+        fcntl.flock(self._writer_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        try:
+            (self.folder/'capture.json').write_text(json.dumps(self.snapshot(),indent=2,allow_nan=False))
+            self.thread.start()
+        except Exception:
+            self._writer_lock.close()
+            raise
         if not self.ready.wait(5):
             self.error = 'Writer initialization timed out'
             self.accepting = False
@@ -91,6 +99,7 @@ class PCMCapture:
             with sf.SoundFile(self.folder/'audio.wav',mode='w',samplerate=self.sample_rate,
                               channels=2,format='WAV',subtype='FLOAT') as audio, (self.folder/'blocks.jsonl').open('w') as blocks:
                 self.status = 'recording'
+                last_flush=-float('inf')
                 self.ready.set()
                 while not self.stopping or self.queue:
                     try: pcm,frame = self.queue.popleft()
@@ -106,6 +115,9 @@ class PCMCapture:
                     blocks.write(json.dumps(frame,sort_keys=True,allow_nan=False)+'\n')
                     self.written += len(pcm)
                     self.last_sample = frame['sample_index']+len(pcm)
+                    if time.monotonic()-last_flush>=.25:
+                        audio.flush();blocks.flush()
+                        last_flush=time.monotonic()
                 self.status = 'finalizing'
         except Exception as exc:
             self.error = str(exc)
@@ -122,6 +134,8 @@ class PCMCapture:
             except OSError as exc:
                 self.error = f'{self.error or ""}; manifest: {exc}'
                 self.status = 'failed'
+            finally:
+                self._writer_lock.close()
 
     def abort(self, message):
         self.error = message
