@@ -83,3 +83,12 @@ fork reconciliation, dependency audit, and clipping notes.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The movement laboratory can render PCM without opening an audio device using
+`AudioEngine.render_block(now=<logical_seconds>)`. It runs the same kernel as
+the production callback, with the configured block size and a caller-owned
+monotonic clock. Submit `LaboratoryInput` controls with that same logical time;
+leases and envelopes retain their production behavior. Each offline run owns a
+fresh store and engine. Rendering on an engine that is running a stream is
+rejected. Audio remains stereo float32 after shaping/master/soft limiting;
+`voice_frame()` describes oscillators before shaping/limiting, not the PCM.

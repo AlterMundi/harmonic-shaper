@@ -152,8 +152,28 @@ class AudioEngine:
             return str(sd.query_devices())
         return "(sounddevice not installed)"
 
+    def render_block(self, frames: int | None = None, *, now: float) -> np.ndarray:
+        """Render with the production kernel, without a stream or wall clock.
+
+        The caller owns a monotonic logical clock and submits controls before
+        each block. The block size remains part of the instrument configuration.
+        """
+        if self._running:
+            raise RuntimeError("Offline rendering cannot share a running engine")
+        frames = self._block_size if frames is None else frames
+        if type(frames) is not int or not 1 <= frames <= self._block_size:
+            raise ValueError("frames must be 1..configured block size")
+        if not np.isfinite(now) or now < getattr(self, "_offline_now", -np.inf):
+            raise ValueError("logical time must be finite and monotonic")
+        self._offline_now = now
+        output = np.empty((frames, 2), dtype=np.float32)
+        self._render_into(output, frames, None, None, generated=now)
+        return output
+
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
-        generated = time.monotonic()
+        self._render_into(outdata, frames, time_info, status, generated=time.monotonic())
+
+    def _render_into(self, outdata, frames, time_info, status, *, generated):
         laboratory = getattr(self._store, "laboratory_input", None)
         if laboratory is not None:
             laboratory.expire(generated)
@@ -172,7 +192,7 @@ class AudioEngine:
         # HTTP edit must not label the previous audio block with a newer revision.
         with self._store._lock:
             voices = self._store.get_snapshot()  # active voices only (post generators)
-            control_identity = laboratory.frame_identity(time.monotonic()) if laboratory is not None else {}
+            control_identity = laboratory.frame_identity(generated) if laboratory is not None else {}
         active_ns = set(voices.keys())
         tracked_ns = set(self._voice_state.keys())
 
