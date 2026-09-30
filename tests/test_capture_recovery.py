@@ -91,3 +91,17 @@ def test_recovery_api_only_accepts_known_capture_ids(tmp_path):
         capture.abort('Interrupted');capture.stop()
         response=client.post('/api/audio/capture/recover',json={'id':capture.id})
         assert response.status_code==200 and response.json()['status']=='recovered'
+
+
+def test_recovery_retry_reuses_verified_result_and_rejects_tampering(tmp_path):
+    capture=PCMCapture(tmp_path,48000);offer(capture)
+    for _ in range(200):
+        if capture.written:break
+        time.sleep(.005)
+    capture.abort('Interrupted');capture.stop()
+    a=recover_capture(capture.folder);b=recover_capture(capture.folder)
+    assert not a['reused'] and b['reused'] and a['directory']==b['directory']
+    assert len(list((capture.folder/'recovered').iterdir()))==1
+    (Path(a['directory'])/'audio.wav').write_bytes(b'changed')
+    with pytest.raises(ValueError,match='artifact changed'):recover_capture(capture.folder)
+    assert len(list((capture.folder/'recovered').iterdir()))==1

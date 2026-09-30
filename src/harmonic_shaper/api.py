@@ -95,6 +95,10 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
         except (ValueError, TypeError, OSError) as exc:
             raise HTTPException(422, str(exc)) from exc
 
+    @app.get("/api/audio/capture/recovery-contract")
+    def capture_recovery_contract():
+        return {"schema_version":1,"idempotent_source_hashes":True}
+
     @app.post("/api/audio/capture/recover")
     def recover_audio_capture(body: dict):
         import re

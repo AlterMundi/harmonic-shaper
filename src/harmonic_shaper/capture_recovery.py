@@ -52,6 +52,19 @@ def recover_capture(folder):
             manifest=folder/'manifest.json'
             if manifest.exists() and json.loads(manifest.read_text()).get('status')=='complete':
                 raise ValueError('Capture already closed successfully')
+            source_hashes={name:digest(folder/name) for name in ('audio.wav','blocks.jsonl','capture.json')}
+            recovered=folder/'recovered'
+            if recovered.exists():
+                for candidate in sorted(recovered.iterdir()):
+                    if candidate.is_symlink() or not candidate.is_dir():continue
+                    try:previous=json.loads((candidate/'manifest.json').read_text())
+                    except (OSError,ValueError):continue
+                    if previous.get('status')=='recovered' and previous.get('source_hashes')==source_hashes:
+                        for name in ('audio.wav','blocks.jsonl'):
+                            artifact=candidate/name
+                            if artifact.is_symlink() or digest(artifact)!=previous['hashes'][name]:
+                                raise ValueError('Existing recovered artifact changed')
+                        return dict(previous,directory=str(candidate),source_directory=str(folder),reused=True)
             metadata=json.loads((folder/'capture.json').read_text())
             with (folder/'audio.wav').open('rb') as raw:
                 offset,rate=data_offset(raw)
@@ -87,8 +100,10 @@ def recover_capture(folder):
                             if len(chunk)!=count*8:raise ValueError('PCM changed during recovery')
                             audio.write(np.frombuffer(chunk,dtype='<f4').reshape(-1,2));remaining-=count
                     (output/'blocks.jsonl').write_text(''.join(json.dumps(row,sort_keys=True,allow_nan=False)+'\n' for row in rows))
-                    report.update(status='recovered',hashes={name:digest(output/name) for name in ('audio.wav','blocks.jsonl')},
-                                  source_hashes={name:digest(folder/name) for name in ('audio.wav','blocks.jsonl','capture.json')})
+                    if {name:digest(folder/name) for name in source_hashes}!=source_hashes:
+                        raise ValueError('Raw capture changed during recovery')
+                    report.update(status='recovered',reused=False,hashes={name:digest(output/name) for name in ('audio.wav','blocks.jsonl')},
+                                  source_hashes=source_hashes)
                 except Exception as exc:
                     report.update(status='failed',error=str(exc));raise
                 finally:

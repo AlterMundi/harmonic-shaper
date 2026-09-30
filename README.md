@@ -149,3 +149,12 @@ is recovered, never complete; truncated or unconfirmed tails are excluded. This
 handles process interruption, not a guarantee against power loss or disk corruption.
 Legacy captures without the lock/metadata contract are rejected. API accepts IDs
 under its configured capture root, not caller-supplied paths.
+
+Recovery retries are idempotent for unchanged raw hashes: a previously recovered
+prefix is returned with `reused=true` after verifying its WAV/journal hashes. A
+modified recovered artifact is rejected rather than silently copied again. Raw
+changes allow a new result; every result retains its source hashes. GET
+`/api/audio/capture/recovery-contract` advertises schema 1 and
+`idempotent_source_hashes=true`. Recovery still uses a nonblocking lock: another
+in-flight recovery can return an active-lock error; persistent job polling for
+that case is not yet implemented.
