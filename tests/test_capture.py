@@ -129,3 +129,13 @@ def test_capture_limits_are_validated_before_creating_files(tmp_path):
         with pytest.raises(ValueError): PCMCapture(tmp_path,48000,**settings)
     with pytest.raises(ValueError,match='RIFF'): PCMCapture(tmp_path,192000,max_seconds=3600)
     assert not list(tmp_path.iterdir())
+
+
+def test_owner_retry_is_idempotent_even_after_capture_completes(tmp_path):
+    e=engine()
+    a=e.start_capture(tmp_path,owner='weaver_test',max_seconds=.1)
+    b=e.start_capture(tmp_path,owner='weaver_test',max_seconds=.1)
+    assert a['id']==b['id']
+    e.stop_capture()
+    assert e.start_capture(tmp_path,owner='weaver_test',max_seconds=.1)['id']==a['id']
+    assert len(list(tmp_path.iterdir()))==1

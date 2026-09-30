@@ -86,7 +86,7 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
     def start_capture(body: dict):
         if audio is None or not audio.is_running:
             raise HTTPException(503, "audio engine is not running")
-        if set(body)-{"max_seconds", "queue_blocks"}:
+        if set(body)-{"max_seconds", "queue_blocks", "owner"}:
             raise HTTPException(422, "Unexpected capture parameters")
         from pathlib import Path
         root = capture_root or Path.home()/".local/share/harmonic-shaper/laboratory-captures"

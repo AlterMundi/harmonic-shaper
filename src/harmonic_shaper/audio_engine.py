@@ -393,14 +393,22 @@ class AudioEngine:
                 capture.offer(outdata, self._telemetry)
         self._sample_index += frames
 
-    def start_capture(self, root, *, max_seconds=120., queue_blocks=128):
+    def start_capture(self, root, *, max_seconds=120., queue_blocks=128, owner=None):
         # Control-side serialization only: the callback never acquires this lock.
         with self._lock:
+            if type(max_seconds) not in (int, float) or not np.isfinite(max_seconds) or not .1 <= max_seconds <= 3600:
+                raise ValueError("max_seconds must be .1..3600")
+            if type(queue_blocks) is not int or not 4 <= queue_blocks <= 1024:
+                raise ValueError("queue_blocks must be 4..1024")
+            if owner is not None and self._capture is not None and self._capture.owner == owner:
+                if self._capture.maximum != round(max_seconds*self._sample_rate) or self._capture.queue.maxlen != queue_blocks:
+                    raise ValueError("Capture owner reused with different settings")
+                return self._capture.snapshot()
             if self._capture is not None and self._capture.thread.is_alive():
                 raise ValueError("A capture is already active")
             from .capture import PCMCapture
             self._capture = PCMCapture(root, self._sample_rate,
-                max_seconds=max_seconds, queue_blocks=queue_blocks)
+                max_seconds=max_seconds, queue_blocks=queue_blocks, owner=owner)
             return self._capture.snapshot()
 
     def stop_capture(self, expected_id=None):

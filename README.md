@@ -101,6 +101,10 @@ samples assigned to PortAudio. It is separate from the legacy pre-limiter
 
 - `POST /api/audio/capture/start`: `{"max_seconds":120,"queue_blocks":128}`.
   Requires a running audio engine; rejects overlapping starts and invalid limits.
+  Optional `owner` is an opaque 1..80-character alphanumeric/underscore/hyphen
+  nonce. Repeating that owner with the same settings returns its existing capture
+  (also after completion), allowing recovery of a lost start acknowledgement.
+  Reusing it with different settings is rejected; it is not authentication.
 - `GET /api/audio/capture`: progress/error, sample bounds, queue size and output
   directory. `POST /api/audio/capture/stop`: optionally `{"id":"<capture-id>"}`;
   a stale identifier cannot stop a newer capture.
