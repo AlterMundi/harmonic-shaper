@@ -92,3 +92,43 @@ leases and envelopes retain their production behavior. Each offline run owns a
 fresh store and engine. Rendering on an engine that is running a stream is
 rejected. Audio remains stereo float32 after shaping/master/soft limiting;
 `voice_frame()` describes oscillators before shaping/limiting, not the PCM.
+
+## Optional laboratory PCM capture (development)
+
+The capture tap is **after** the soft limiter and copies the exact float32
+samples assigned to PortAudio. It is separate from the legacy pre-limiter
+`attach_recorder` hook. Nothing is recorded until an explicit start.
+
+- `POST /api/audio/capture/start`: `{"max_seconds":120,"queue_blocks":128}`.
+  Requires a running audio engine; rejects overlapping starts and invalid limits.
+- `GET /api/audio/capture`: progress/error, sample bounds, queue size and output
+  directory. `POST /api/audio/capture/stop`: optionally `{"id":"<capture-id>"}`;
+  a stale identifier cannot stop a newer capture.
+- Default private output: `~/.local/share/harmonic-shaper/laboratory-captures/<id>/`.
+  `audio.wav` is stereo float after shape/master/limiter; `blocks.jsonl` preserves
+  sample index, callback monotonic/DAC timestamps, pre-shape voices and crop size.
+  `manifest.json` is written atomically after the files close.
+
+A bounded single-producer/single-consumer deque holds copied blocks. The callback
+never waits for disk or queue capacity; the writer runs separately. Queue overflow,
+clock discontinuity, sample-rate changes, callback status or stream failure mark
+capture failed. Overflow/disk failure do not stop synthesis. Duration ends exactly
+at the requested sample count; early stop closes the current contiguous interval.
+The RIFF size limit is validated before starting. Start/stop ownership is serialized
+outside the callback. This is Python software, not a hard realtime deadline guarantee.
+
+Captured PCM is Shaper's digital output, excluding downstream mixer/device gain or
+other programs. This first foundation does not capture video or laboratory
+configuration changes; the Weaver UI/session collector and audiovisual alignment
+are subsequent LAB-09 work. No camera capture or retrospective buffer is enabled.
+Abrupt process termination can leave an interrupted file: this version does not
+claim crash recovery. The running laboratory is not upgraded by checking out this
+branch. A change in AudioEngine also changes the strict offline engine hash; use
+the original pinned checkout for an old frozen PCM request, or create a new run.
+
+Verification: `pytest tests/test_capture.py tests/test_offline_render.py
+ tests/test_laboratory.py tests/test_audio_smoke.py tests/test_pads_v2_audio.py -q`:
+32 tests passed. Capture tests cover exact post-limiter samples versus the separate
+pre-limiter tap, sample limits/crop, early stop, bounded overflow, disk/clock/stream
+errors, stale stop, concurrent starts and validation/API. These are hardware-free
+checks; real device latency, audiovisual synchronization and listening remain open.

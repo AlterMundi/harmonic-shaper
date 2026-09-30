@@ -56,6 +56,7 @@ class AudioEngine:
         self._record_sink: Optional[list] = None
         self._sample_index = 0
         self._telemetry = None
+        self._capture = None
 
     def voice_frame(self) -> dict:
         """Latest immutable block snapshot, serialized outside the audio callback."""
@@ -124,6 +125,7 @@ class AudioEngine:
             except Exception as exc:
                 log.warning("Error closing stream: %s", exc)
             self._stream = None
+        self.stop_capture()
         log.info("Shaper audio stopped.")
 
     # ─── Recording tap ──────────────────────────────────────────────────
@@ -383,9 +385,36 @@ class AudioEngine:
                            **control_identity,
                            "output_dac_time_s": float(time_info.outputBufferDacTime) if time_info is not None else None,
                            "stage": "oscillators_pre_shape_limiter", "voices": tuple(voice_telemetry)}
+        capture = self._capture
+        if capture is not None and capture.accepting:
+            if status:
+                capture.abort(f"Audio callback reported status: {status}")
+            else:
+                capture.offer(outdata, self._telemetry)
         self._sample_index += frames
+
+    def start_capture(self, root, *, max_seconds=120., queue_blocks=128):
+        # Control-side serialization only: the callback never acquires this lock.
+        with self._lock:
+            if self._capture is not None and self._capture.thread.is_alive():
+                raise ValueError("A capture is already active")
+            from .capture import PCMCapture
+            self._capture = PCMCapture(root, self._sample_rate,
+                max_seconds=max_seconds, queue_blocks=queue_blocks)
+            return self._capture.snapshot()
+
+    def stop_capture(self, expected_id=None):
+        with self._lock:
+            if expected_id is not None and (self._capture is None or self._capture.id != expected_id):
+                raise ValueError("Capture identifier changed")
+            return self._capture.stop() if self._capture is not None else {"status":"idle"}
+
+    def capture_state(self):
+        return self._capture.snapshot() if self._capture is not None else {"status":"idle"}
 
     def _on_stream_finished(self) -> None:
         if self._running:
             log.warning("Audio stream finished unexpectedly.")
+            if self._capture is not None and self._capture.accepting:
+                self._capture.abort("Audio stream finished unexpectedly")
         self._running = False

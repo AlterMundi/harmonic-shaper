@@ -21,7 +21,7 @@ from .state import VoiceParameterStore
 log = logging.getLogger(__name__)
 
 
-def create_app(store: VoiceParameterStore, audio=None) -> "FastAPI":
+def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> "FastAPI":
     """Create the extracted Shaper-only HTTP/WebSocket application."""
 
     if not HAS_FASTAPI:
@@ -77,6 +77,33 @@ def create_app(store: VoiceParameterStore, audio=None) -> "FastAPI":
         if audio is None:
             raise HTTPException(503, "audio engine is disabled")
         return audio.voice_frame()
+
+    @app.get("/api/audio/capture")
+    def capture_state():
+        return audio.capture_state() if audio is not None else {"status":"idle", "error":"audio engine disabled"}
+
+    @app.post("/api/audio/capture/start")
+    def start_capture(body: dict):
+        if audio is None or not audio.is_running:
+            raise HTTPException(503, "audio engine is not running")
+        if set(body)-{"max_seconds", "queue_blocks"}:
+            raise HTTPException(422, "Unexpected capture parameters")
+        from pathlib import Path
+        root = capture_root or Path.home()/".local/share/harmonic-shaper/laboratory-captures"
+        try:
+            return audio.start_capture(root, **body)
+        except (ValueError, TypeError, OSError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/api/audio/capture/stop")
+    def stop_capture(body: dict | None = None):
+        body = body or {}
+        if set(body)-{"id"}:
+            raise HTTPException(422, "Unexpected capture parameters")
+        try:
+            return audio.stop_capture(expected_id=body.get("id")) if audio is not None else {"status":"idle"}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     def _on_change() -> None:
         if event_loop is None or not event_loop.is_running():
