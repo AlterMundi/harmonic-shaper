@@ -111,7 +111,9 @@ samples assigned to PortAudio. It is separate from the legacy pre-limiter
 - Default private output: `~/.local/share/harmonic-shaper/laboratory-captures/<id>/`.
   `audio.wav` is stereo float after shape/master/limiter; `blocks.jsonl` preserves
   sample index, callback monotonic/DAC timestamps, pre-shape voices and crop size.
-  `manifest.json` is written atomically after the files close.
+  `manifest.json` is written atomically after the files close. Capture state and
+  manifest include module hashes and Python/numpy/soundfile versions observed
+  when recording starts (files on disk, not an attestation of loaded modules).
 
 A bounded single-producer/single-consumer deque holds copied blocks. The callback
 never waits for disk or queue capacity; the writer runs separately. Queue overflow,

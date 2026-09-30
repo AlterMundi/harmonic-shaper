@@ -28,6 +28,9 @@ def test_capture_exactly_matches_emitted_post_limiter_samples_and_clock(tmp_path
     for i in range(30): emitted.append(e.render_block(now=(i+1)*256/48000))
     state=e.stop_capture()
     assert state['status']=='complete' and not state['writer_alive']
+    import hashlib
+    assert state['code']['files']['audio_engine.py']==hashlib.sha256(
+        (Path(__file__).parents[1]/'src/harmonic_shaper/audio_engine.py').read_bytes()).hexdigest()
     assert state['written_samples']==4800 and state['first_sample_index']==256
     samples,sr=sf.read(Path(state['directory'])/'audio.wav',dtype='float32',always_2d=True)
     np.testing.assert_array_equal(samples,np.concatenate(emitted)[:4800])

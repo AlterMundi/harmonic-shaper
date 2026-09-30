@@ -1,5 +1,7 @@
 """Explicit, bounded post-limiter PCM capture; writer never runs in callback."""
 import json
+import hashlib
+import platform
 import re
 from pathlib import Path
 from collections import deque
@@ -23,6 +25,12 @@ class PCMCapture:
             raise ValueError("Duration exceeds RIFF WAVE size limit; lower max_seconds")
         if owner is not None and (not isinstance(owner,str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,80}",owner)):
             raise ValueError("Invalid capture owner")
+        package=Path(__file__).resolve().parent
+        files={name:hashlib.sha256((package/name).read_bytes()).hexdigest()
+               for name in ('capture.py','audio_engine.py','state.py','laboratory.py','audio_levels.py','config.py')}
+        self.code={'files':files,'code_sha256':hashlib.sha256(
+            json.dumps(files,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+            'python':platform.python_version(),'numpy':np.__version__,'soundfile':sf.__version__}
         self.owner = owner
         self.id = uuid4().hex
         self.folder = Path(root)/self.id
@@ -128,7 +136,7 @@ class PCMCapture:
         return self.snapshot()
 
     def snapshot(self):
-        return dict(schema_version=1,id=self.id,owner=self.owner,status=self.status,error=self.error,
+        return dict(schema_version=1,id=self.id,owner=self.owner,code=self.code,status=self.status,error=self.error,
                     directory=str(self.folder),sample_rate=self.sample_rate,channels=2,
                     subtype='FLOAT',stage='post_shape_master_soft_limiter',
                     accepted_samples=self.accepted,written_samples=self.written,
