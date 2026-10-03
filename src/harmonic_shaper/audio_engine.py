@@ -12,6 +12,7 @@ Adapted from NaturalHarmony/harmonic_shaper/audio_engine.py:
 
 import logging
 import threading
+import time
 from typing import Optional
 
 import numpy as np
@@ -53,6 +54,20 @@ class AudioEngine:
         self._running = False
         self._lock = threading.RLock()
         self._record_sink: Optional[list] = None
+        self._sample_index = 0
+        self._telemetry = None
+        self._capture = None
+
+    def voice_frame(self) -> dict:
+        """Latest immutable block snapshot, serialized outside the audio callback."""
+        frame = self._telemetry
+        if frame is None:
+            return {"schema_version": 1, "sample_index": 0, "sample_rate": self._sample_rate,
+                    "block_frames": self._block_size, "generated_monotonic_s": time.monotonic(),
+                    "output_dac_time_s": None, "running": False,
+                    "stage": "oscillators_pre_shape_limiter", "voices": []}
+        return {**frame, "running": self._running,
+                "voices": [dict(voice) for voice in frame["voices"]]}
 
     def _resolve_stream_params(self) -> tuple[int, Optional[int | str]]:
         """Resolve the effective (sample_rate, device) for the stream.
@@ -82,6 +97,9 @@ class AudioEngine:
             detail = str(SOUNDDEVICE_IMPORT_ERROR or "not installed")
             raise ImportError(f"sounddevice/PortAudio is required: {detail}")
         sample_rate, device = self._resolve_stream_params()
+        # The callback may run inside start(); use the actual device rate already.
+        self._sample_rate = sample_rate
+        self._device = device
         self._stream = sd.OutputStream(
             samplerate=sample_rate,
             blocksize=self._block_size,
@@ -107,6 +125,7 @@ class AudioEngine:
             except Exception as exc:
                 log.warning("Error closing stream: %s", exc)
             self._stream = None
+        self.stop_capture()
         log.info("Shaper audio stopped.")
 
     # ─── Recording tap ──────────────────────────────────────────────────
@@ -135,7 +154,31 @@ class AudioEngine:
             return str(sd.query_devices())
         return "(sounddevice not installed)"
 
+    def render_block(self, frames: int | None = None, *, now: float) -> np.ndarray:
+        """Render with the production kernel, without a stream or wall clock.
+
+        The caller owns a monotonic logical clock and submits controls before
+        each block. The block size remains part of the instrument configuration.
+        """
+        if self._running:
+            raise RuntimeError("Offline rendering cannot share a running engine")
+        frames = self._block_size if frames is None else frames
+        if type(frames) is not int or not 1 <= frames <= self._block_size:
+            raise ValueError("frames must be 1..configured block size")
+        if not np.isfinite(now) or now < getattr(self, "_offline_now", -np.inf):
+            raise ValueError("logical time must be finite and monotonic")
+        self._offline_now = now
+        output = np.empty((frames, 2), dtype=np.float32)
+        self._render_into(output, frames, None, None, generated=now)
+        return output
+
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
+        self._render_into(outdata, frames, time_info, status, generated=time.monotonic())
+
+    def _render_into(self, outdata, frames, time_info, status, *, generated):
+        laboratory = getattr(self._store, "laboratory_input", None)
+        if laboratory is not None:
+            laboratory.expire(generated)
         if status:
             log.debug("Audio status: %s", status)
         dt = frames / self._sample_rate
@@ -147,7 +190,11 @@ class AudioEngine:
         self._store.advance_arp(dt)
         self._store.advance_perc(dt)
 
-        voices = self._store.get_snapshot()  # active voices only (post generators)
+        # Read parameters and their control identity atomically: a concurrent
+        # HTTP edit must not label the previous audio block with a newer revision.
+        with self._store._lock:
+            voices = self._store.get_snapshot()  # active voices only (post generators)
+            control_identity = laboratory.frame_identity(generated) if laboratory is not None else {}
         active_ns = set(voices.keys())
         tracked_ns = set(self._voice_state.keys())
 
@@ -157,7 +204,12 @@ class AudioEngine:
 
         # ── Mark released voices (was tracked, no longer active) ────
         for n in tracked_ns - active_ns:
-            self._voice_state[n]["params"].active = False
+            params = self._voice_state[n]["params"]
+            params.active = False
+            if laboratory is not None:
+                release = laboratory.release_seconds(n, params.voice_id)
+                if release is not None:
+                    params.release_s = release
 
         # ── Update active voices' params ─────────────────────────────
         for n in active_ns & tracked_ns:
@@ -192,6 +244,7 @@ class AudioEngine:
         partial_ceiling = self._store.get_partial_ceiling()
 
         mix = np.zeros((frames, 2), dtype=np.float32)
+        voice_telemetry = []
 
         to_prune = []
         for n, state in self._voice_state.items():
@@ -222,11 +275,15 @@ class AudioEngine:
 
             state["env"] = new_env
 
+            lab_voice = 7101 <= (params.voice_id or 0) <= 7132
             if not params.active and new_env <= 0.0:
                 to_prune.append(n)
-                continue
+                # Render the final fade block before pruning. Explicit zero-time
+                # silence remains immediate (panic/diagnostic contract).
+                if not lab_voice or release_s <= 0:
+                    continue
 
-            if new_env <= 0.0:
+            if new_env <= 0.0 and not (lab_voice and current_env > 0):
                 continue
 
             # ── LFO modulation per voice ──────────────────────────────
@@ -240,7 +297,16 @@ class AudioEngine:
             t = np.arange(frames, dtype=np.float64) / self._sample_rate
             start_phase = state["phase"]
             carrier_phases = 2.0 * np.pi * params.freq * t + start_phase
-            sine = np.sin(carrier_phases + mod_phase).astype(np.float32)
+            phase_start = mod_phase
+            phase_delta = 0.
+            if lab_voice:
+                phase_start = state.get("rendered_phase_offset", mod_phase)
+                phase_delta = (mod_phase - phase_start + np.pi) % (2*np.pi) - np.pi
+                phase_offsets = phase_start + phase_delta * np.arange(frames) / max(1, frames-1)
+                state["rendered_phase_offset"] = phase_start + phase_delta
+            else:
+                phase_offsets = mod_phase
+            sine = np.sin(carrier_phases + phase_offsets).astype(np.float32)
 
             # ── Waveshaper (didgeridoo/vocal timbre) ──────────────────
             shape = params.shape
@@ -264,7 +330,19 @@ class AudioEngine:
             # norm; the norm keeps total power bounded regardless.
             voice_contribution = float(mod_gain) * voice_norm * new_env
             voice_contribution = min(1.2, voice_contribution + pluck_env * voice_norm)
-            sine *= voice_contribution
+            gain_start = voice_contribution
+            if lab_voice:
+                gain_start = state.get("rendered_gain", 0.)
+                sine *= np.linspace(gain_start, voice_contribution, frames, dtype=np.float32)
+                state["rendered_gain"] = voice_contribution
+            else:
+                sine *= voice_contribution
+            voice_telemetry.append({"voice_id": int(params.voice_id if params.voice_id is not None else n),
+                                    "harmonic_n": int(params.harmonic_n), "frequency_hz": float(params.freq),
+                                    "gain": float(gain_start), "phase_rad": float((start_phase+phase_start) % (2*np.pi)),
+                                    **({"gain_end": float(voice_contribution), "phase_offset_delta_rad": float(phase_delta)} if lab_voice else {}),
+                                    "envelope": float(new_env), "pan": float(mod_pan), "shape": float(shape),
+                                    "releasing": not params.active})
             state["phase"] = (
                 carrier_phases[-1] + 2.0 * np.pi * params.freq / self._sample_rate
             ) % (2.0 * np.pi)
@@ -285,7 +363,12 @@ class AudioEngine:
             sc_factor = 1.0 + abs(sidechain_amount) * (1.0 - beacon_level)
 
         # Master gain + side-chain + soft limiter
-        mix *= self._store.get_master_gain() * sc_factor
+        master = self._store.get_master_gain() * sc_factor
+        mix *= master
+        for voice in voice_telemetry:
+            voice["gain"] *= master
+            if "gain_end" in voice:
+                voice["gain_end"] *= master
 
         # ── Recording tap: hand a copy of the final mix to the recorder
         #    BEFORE the soft limiter, so the Recorder can do its own
@@ -296,7 +379,50 @@ class AudioEngine:
 
         mix = soft_limit(mix)
         outdata[:] = mix
+        self._telemetry = {"schema_version": 1, "sample_index": self._sample_index,
+                           "sample_rate": self._sample_rate, "block_frames": frames,
+                           "generated_monotonic_s": generated,
+                           **control_identity,
+                           "output_dac_time_s": float(time_info.outputBufferDacTime) if time_info is not None else None,
+                           "stage": "oscillators_pre_shape_limiter", "voices": tuple(voice_telemetry)}
+        capture = self._capture
+        if capture is not None and capture.accepting:
+            if status:
+                capture.abort(f"Audio callback reported status: {status}")
+            else:
+                capture.offer(outdata, self._telemetry)
+        self._sample_index += frames
+
+    def start_capture(self, root, *, max_seconds=120., queue_blocks=128, owner=None):
+        # Control-side serialization only: the callback never acquires this lock.
+        with self._lock:
+            if type(max_seconds) not in (int, float) or not np.isfinite(max_seconds) or not .1 <= max_seconds <= 3600:
+                raise ValueError("max_seconds must be .1..3600")
+            if type(queue_blocks) is not int or not 4 <= queue_blocks <= 1024:
+                raise ValueError("queue_blocks must be 4..1024")
+            if owner is not None and self._capture is not None and self._capture.owner == owner:
+                if self._capture.maximum != round(max_seconds*self._sample_rate) or self._capture.queue.maxlen != queue_blocks:
+                    raise ValueError("Capture owner reused with different settings")
+                return self._capture.snapshot()
+            if self._capture is not None and self._capture.thread.is_alive():
+                raise ValueError("A capture is already active")
+            from .capture import PCMCapture
+            self._capture = PCMCapture(root, self._sample_rate,
+                max_seconds=max_seconds, queue_blocks=queue_blocks, owner=owner)
+            return self._capture.snapshot()
+
+    def stop_capture(self, expected_id=None):
+        with self._lock:
+            if expected_id is not None and (self._capture is None or self._capture.id != expected_id):
+                raise ValueError("Capture identifier changed")
+            return self._capture.stop() if self._capture is not None else {"status":"idle"}
+
+    def capture_state(self):
+        return self._capture.snapshot() if self._capture is not None else {"status":"idle"}
 
     def _on_stream_finished(self) -> None:
-        log.warning("Audio stream finished unexpectedly.")
+        if self._running:
+            log.warning("Audio stream finished unexpectedly.")
+            if self._capture is not None and self._capture.accepting:
+                self._capture.abort("Audio stream finished unexpectedly")
         self._running = False

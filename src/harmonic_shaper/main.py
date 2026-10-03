@@ -27,7 +27,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Standalone Harmonic Shaper")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
     parser.add_argument("--list-midi", action="store_true", help="List MIDI ports and exit")
-    parser.add_argument("--device", help="Audio device ID or name substring")
+    parser.add_argument("--device", type=lambda value: int(value) if value.lstrip("-").isdigit() else value,
+                        help="Audio device ID or name substring")
     parser.add_argument("--no-audio", action="store_true", help="Disable the audio stream")
     parser.add_argument(
         "--no-midi",
@@ -203,7 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .api import create_app
 
             api_config = uvicorn.Config(
-                create_app(store),
+                create_app(store, audio=audio),
                 host=args.api_host,
                 port=args.api_port,
                 log_level="warning",
