@@ -155,6 +155,13 @@ prefix is returned with `reused=true` after verifying its WAV/journal hashes. A
 modified recovered artifact is rejected rather than silently copied again. Raw
 changes allow a new result; every result retains its source hashes. GET
 `/api/audio/capture/recovery-contract` advertises schema 1 and
-`idempotent_source_hashes=true`. Recovery still uses a nonblocking lock: another
-in-flight recovery can return an active-lock error; persistent job polling for
-that case is not yet implemented.
+`idempotent_source_hashes=true` and `pollable_jobs=true`. The legacy synchronous
+route remains available. For resumable recovery, POST
+`/api/audio/capture/recovery-jobs` with `{"id":"<capture-id>","job_id":"<client-uuid-hex>"}`.
+GET `/api/audio/capture/recovery-jobs/<job-id>` observes queued/running/recovered/
+failed/interrupted without starting work. Same job ID/capture recovers its receipt;
+another capture with that ID is rejected. Receipts persist under recovery-jobs;
+writer locks distinguish live jobs from interrupted ones across service restart.
+An interrupted/failed receipt does not restart automatically; a new explicit
+attempt needs a new job ID. Completed receipts describe that attempt, not a fresh
+verification of current raw files; legacy recovery/exports verify artifacts.

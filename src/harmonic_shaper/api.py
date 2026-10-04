@@ -49,6 +49,9 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
 
     ws_manager = _WsManager()
     event_loop: Optional[asyncio.AbstractEventLoop] = None
+    from pathlib import Path
+    from .recovery_jobs import RecoveryJobs
+    recovery_jobs = RecoveryJobs(capture_root or Path.home()/'.local/share/harmonic-shaper/laboratory-captures')
 
     @asynccontextmanager
     async def _lifespan(app_instance):
@@ -56,6 +59,7 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
         nonlocal event_loop
         event_loop = asyncio.get_running_loop()
         yield
+        recovery_jobs.close()
         event_loop = None
 
     app = FastAPI(title="Harmonic Shaper", version="0.1.0", lifespan=_lifespan)
@@ -97,7 +101,20 @@ def create_app(store: VoiceParameterStore, audio=None, *, capture_root=None) -> 
 
     @app.get("/api/audio/capture/recovery-contract")
     def capture_recovery_contract():
-        return {"schema_version":1,"idempotent_source_hashes":True}
+        return {"schema_version":1,"idempotent_source_hashes":True,"pollable_jobs":True}
+
+    @app.post('/api/audio/capture/recovery-jobs')
+    def start_recovery_job(body: dict):
+        if set(body) != {'id', 'job_id'}:
+            raise HTTPException(422, 'Expected capture id and recovery job_id')
+        try: return recovery_jobs.start(body['id'], body['job_id'])
+        except (ValueError, OSError, KeyError) as exc: raise HTTPException(422, str(exc)) from exc
+
+    @app.get('/api/audio/capture/recovery-jobs/{job_id}')
+    def read_recovery_job(job_id: str):
+        try: return recovery_jobs.read(job_id)
+        except FileNotFoundError as exc: raise HTTPException(404, str(exc)) from exc
+        except (ValueError, OSError, KeyError) as exc: raise HTTPException(422, str(exc)) from exc
 
     @app.post("/api/audio/capture/recover")
     def recover_audio_capture(body: dict):
