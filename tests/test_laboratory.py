@@ -152,3 +152,32 @@ def test_updates_of_sustained_voice_preserve_oscillator_and_envelope():
         assert state['env']==1.
         assert state['phase']==pytest.approx((previous_phase+2*np.pi*80*256/48000)%(2*np.pi))
         assert not engine.voice_frame()['voices'][0]['releasing']
+
+
+def test_portaudio_status_is_counted_and_does_not_change_rendered_audio():
+    store=VoiceParameterStore();lab=LaboratoryInput(store);store.laboratory_input=lab
+    lab.apply(control(n=1),now=0.)
+    a=AudioEngine(store,sample_rate=48000,block_size=1024)
+    b=AudioEngine(store,sample_rate=48000,block_size=1024)
+    a._running=b._running=True
+    x=np.zeros((1024,2),dtype=np.float32);y=np.zeros_like(x)
+    a._render_into(x,1024,None,SimpleNamespace(output_underflow=True),generated=.01)
+    b._render_into(y,1024,None,None,generated=.01)
+    assert np.array_equal(x,y)
+    old=a.voice_frame()['audio_health'];identity=old['engine_id']
+    assert old['output_underflows']==1 and old['status_events']==1
+    assert old['last_status_sample_index']==0
+    a._render_into(x,1024,None,None,generated=.02)
+    assert a.voice_frame()['audio_health']==old
+    a._render_into(x,1024,None,SimpleNamespace(output_underflow=False),generated=.03)
+    new=a.voice_frame()['audio_health']
+    assert new['engine_id']==identity and new['status_events']==2 and new['output_underflows']==1
+    assert new['last_status_sample_index']==2048
+    old['output_underflows']=500
+    assert a.voice_frame()['audio_health']['output_underflows']==1
+    assert b.voice_frame()['audio_health']['output_underflows']==0
+    fresh=AudioEngine(store)
+    assert fresh.voice_frame()['audio_health'] is None
+    fresh._running=True
+    fresh._render_into(x,1024,None,None,generated=.04)
+    assert fresh.voice_frame()['audio_health']['engine_id']!=identity

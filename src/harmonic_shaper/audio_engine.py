@@ -13,6 +13,7 @@ Adapted from NaturalHarmony/harmonic_shaper/audio_engine.py:
 import logging
 import threading
 import time
+from uuid import uuid4
 from typing import Optional
 
 import numpy as np
@@ -57,6 +58,11 @@ class AudioEngine:
         self._sample_index = 0
         self._telemetry = None
         self._capture = None
+        # Immutable snapshots: the callback updates these only on a status event.
+        # Engine identity distinguishes a fresh counter from a recovered stream.
+        self._audio_health = {"engine_id": uuid4().hex, "status_events": 0,
+                              "output_underflows": 0, "last_status": None,
+                              "last_status_sample_index": None}
 
     def voice_frame(self) -> dict:
         """Latest immutable block snapshot, serialized outside the audio callback."""
@@ -65,8 +71,10 @@ class AudioEngine:
             return {"schema_version": 1, "sample_index": 0, "sample_rate": self._sample_rate,
                     "block_frames": self._block_size, "generated_monotonic_s": time.monotonic(),
                     "output_dac_time_s": None, "running": False,
-                    "stage": "oscillators_pre_shape_limiter", "voices": []}
+                    "stage": "oscillators_pre_shape_limiter", "voices": [],
+                    "audio_health": None}
         return {**frame, "running": self._running,
+                "audio_health": dict(frame["audio_health"]) if self._running else None,
                 "voices": [dict(voice) for voice in frame["voices"]]}
 
     def _resolve_stream_params(self) -> tuple[int, Optional[int | str]]:
@@ -180,6 +188,10 @@ class AudioEngine:
         if laboratory is not None:
             laboratory.expire(generated)
         if status:
+            self._audio_health = {"engine_id": self._audio_health["engine_id"],
+                "status_events": self._audio_health["status_events"]+1,
+                "output_underflows": self._audio_health["output_underflows"]+int(bool(getattr(status,"output_underflow",False))),
+                "last_status": str(status), "last_status_sample_index": self._sample_index}
             log.debug("Audio status: %s", status)
         dt = frames / self._sample_rate
 
@@ -381,6 +393,7 @@ class AudioEngine:
         outdata[:] = mix
         self._telemetry = {"schema_version": 1, "sample_index": self._sample_index,
                            "sample_rate": self._sample_rate, "block_frames": frames,
+                           "audio_health": self._audio_health,
                            "generated_monotonic_s": generated,
                            **control_identity,
                            "output_dac_time_s": float(time_info.outputBufferDacTime) if time_info is not None else None,
