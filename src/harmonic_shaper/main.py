@@ -30,6 +30,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=lambda value: int(value) if value.lstrip("-").isdigit() else value,
                         help="Audio device ID or name substring")
     parser.add_argument("--no-audio", action="store_true", help="Disable the audio stream")
+    parser.add_argument("--audio-block-size", type=int, choices=[128, 256, 512, 1024, 2048],
+                        default=config.AUDIO_BLOCK_SIZE, help="Frames per audio callback (larger = more buffering)")
     parser.add_argument(
         "--no-midi",
         action="store_true",
@@ -143,7 +145,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         panic_midi_note=args.native_midi_panic_note,
     )
 
-    audio = None if args.no_audio else AudioEngine(store, device=args.device or config.AUDIO_DEVICE)
+    audio = None if args.no_audio else AudioEngine(store, device=args.device or config.AUDIO_DEVICE,
+                                                  block_size=args.audio_block_size)
     osc = None
     if not args.no_osc:
         osc = ShaperOSCReceiver(
