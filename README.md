@@ -165,3 +165,14 @@ writer locks distinguish live jobs from interrupted ones across service restart.
 An interrupted/failed receipt does not restart automatically; a new explicit
 attempt needs a new job ID. Completed receipts describe that attempt, not a fresh
 verification of current raw files; legacy recovery/exports verify artifacts.
+
+### Output controls for the laboratory
+
+`GET /api/audio/output` lists stereo outputs visible to this process and reports
+requested/effective sample rate, block size and output revision. `POST` accepts
+`expected_revision`, `device` (index/name/null), `sample_rate` and `block_size`
+(128/256/512/1024/2048). Release voices and stop captures first. Settings are
+checked before closing the stream; a failed open attempts to restore the previous
+output. Identical settings do not reopen it. These settings are session-local;
+startup flags still configure the next session. JACK uses the graph sample rate,
+so requesting 96 kHz does not change a 48 kHz PipeWire server.

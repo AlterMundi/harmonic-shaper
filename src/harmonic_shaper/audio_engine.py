@@ -34,6 +34,10 @@ from .audio_levels import soft_limit
 log = logging.getLogger(__name__)
 
 
+class AudioOutputConflict(ValueError):
+    pass
+
+
 class AudioEngine:
     """Stereo additive synthesis — one pure sine per active voice."""
 
@@ -58,6 +62,8 @@ class AudioEngine:
         self._sample_index = 0
         self._telemetry = None
         self._capture = None
+        self._output_revision = 0
+        self._requested_sample_rate = sample_rate
         # Immutable snapshots: the callback updates these only on a status event.
         # Engine identity distinguishes a fresh counter from a recovered stream.
         self._audio_health = {"engine_id": uuid4().hex, "status_events": 0,
@@ -135,6 +141,74 @@ class AudioEngine:
             self._stream = None
         self.stop_capture()
         log.info("Shaper audio stopped.")
+
+    def output_settings(self):
+        if not HAS_SOUNDDEVICE:
+            raise RuntimeError("sounddevice/PortAudio unavailable")
+        apis = sd.query_hostapis()
+        devices = [{"id":i, "name":d["name"], "hostapi":apis[d["hostapi"]]["name"],
+                    "default_sample_rate":int(d["default_samplerate"])}
+                   for i,d in enumerate(sd.query_devices()) if d["max_output_channels"] >= 2]
+        return {"revision":self._output_revision, "running":self._running,
+                "device":self._device, "sample_rate":self._sample_rate,
+                "requested_sample_rate":self._requested_sample_rate,
+                "block_size":self._block_size, "devices":devices,
+                "limits":["Only outputs visible to this process/backend",
+                          "JACK uses its graph rate; does not change PipeWire globally",
+                          "Applying reopens stream; output settings are session-local"]}
+
+    def configure_output(self, body):
+        if not isinstance(body,dict) or set(body) != {"expected_revision","device","sample_rate","block_size"}:
+            raise ValueError("Expected output revision, device, sample_rate and block_size")
+        if type(body['expected_revision']) is not int or body['expected_revision'] < 0:
+            raise ValueError("Nonnegative integer output revision required")
+        if body['device'] is not None and not (type(body['device']) is int and body['device'] >= 0) and not (isinstance(body['device'],str) and 0 < len(body['device']) <= 256):
+            raise ValueError("Output device index/name or default required")
+        if type(body['sample_rate']) is not int or not 8000 <= body['sample_rate'] <= 192000:
+            raise ValueError("sample_rate must be 8000..192000")
+        if type(body['block_size']) is not int or body['block_size'] not in (128,256,512,1024,2048):
+            raise ValueError("Unsupported output block_size")
+        with self._lock:
+            if body['expected_revision'] != self._output_revision:
+                raise AudioOutputConflict("Output configuration changed; refresh before applying")
+            if self._record_sink is not None or (self._capture is not None and self._capture.thread.is_alive()):
+                raise AudioOutputConflict("Stop capture/recording before changing audio output")
+            if self._store.get_snapshot() or any(v['gain'] > 1e-6 for v in self.voice_frame()['voices']):
+                raise AudioOutputConflict("Release all voices before changing audio output")
+            if not HAS_SOUNDDEVICE: raise RuntimeError("sounddevice/PortAudio unavailable")
+            info = sd.query_devices(body['device'], 'output')
+            if info['max_output_channels'] < 2: raise ValueError("Stereo output required")
+            hostapi = sd.query_hostapis(info['hostapi'])['name']
+            effective = int(info['default_samplerate']) if 'JACK' in hostapi else body['sample_rate']
+            if (body['device'],effective,body['block_size'],body['sample_rate']) == (self._device,self._sample_rate,self._block_size,self._requested_sample_rate) and self.is_running:
+                return self.output_settings()
+            # Reject unsupported settings before closing the currently usable stream.
+            sd.check_output_settings(device=body['device'],channels=2,dtype='float32',samplerate=effective)
+            old = self._device, self._sample_rate, self._block_size, self._requested_sample_rate, self._running
+            self.stop()
+            self._device, self._sample_rate, self._block_size = body['device'], effective, body['block_size']
+            self._requested_sample_rate = body['sample_rate']
+            def new_clock():
+                self._sample_index = 0
+                self._telemetry = None
+                self._audio_health = {"engine_id":uuid4().hex,"status_events":0,"output_underflows":0,
+                                      "last_status":None,"last_status_sample_index":None}
+            new_clock()
+            try:
+                self.start()
+            except Exception as exc:
+                self.stop()
+                self._device, self._sample_rate, self._block_size, self._requested_sample_rate = old[:4]
+                try:
+                    if old[4]:
+                        new_clock()
+                        self.start()
+                except Exception as rollback:
+                    self._output_revision += 1
+                    raise RuntimeError(f"Output failed; previous output also failed: {rollback}") from exc
+                raise RuntimeError(f"Output failed; previous settings restored: {exc}") from exc
+            self._output_revision += 1
+            return self.output_settings()
 
     # ─── Recording tap ──────────────────────────────────────────────────
     # The Recorder calls attach_recorder(list) on start and detach_recorder
